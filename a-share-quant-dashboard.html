@@ -979,7 +979,7 @@ async function fetchTopFlow(){ // 全市场个股主力净流入 Top
 }
 async function fetchAllMarket(onProg){ // 全市场快照（沪深主板/创业/科创/北交所，含ST）
   const fields='f2,f3,f5,f6,f8,f10,f12,f13,f14,f15,f16,f17,f18,f62,f184';
-  const pz=200;
+  const pz=100;   // 东财 clist 单页硬上限≈100，请求再大也只返回100条（之前写200→少抓一半）
   const urlOf=(fs,pn)=>`https://push2.eastmoney.com/api/qt/clist/get?pn=${pn}&pz=${pz}&po=1&np=1&fltt=2&invt=2&fid=f62&fs=${fs}&fields=${fields}`;
   const parse=arr=>arr.map(x=>{ const mk= x.f13!=null? x.f13 : (/^6/.test(x.f12)?1:0);
     return {code:x.f12, name:x.f14, secid:mk+'.'+x.f12,
@@ -989,15 +989,18 @@ async function fetchAllMarket(onProg){ // 全市场快照（沪深主板/创业/
   async function grab(fs){
     let j1; try{ j1=await apiGet(urlOf(fs,1)); }catch(e){ return {list:[],total:0,err:e.message}; }
     const d1=j1&&j1.data; if(!d1||!d1.diff) return {list:[],total:0,err:'无返回'};
-    const total=d1.total||0, pages=Math.min(45,Math.ceil(total/pz)||1);
-    let all=parse(Array.isArray(d1.diff)?d1.diff:Object.values(d1.diff));
+    const first=parse(Array.isArray(d1.diff)?d1.diff:Object.values(d1.diff));
+    const total=d1.total||0;
+    const effPz=first.length||pz;                              // 用实际每页返回条数算页数，避免服务端限页导致漏抓
+    const pages=Math.min(80,Math.ceil(total/effPz)||1);         // 全市场约5400只，100/页→需~54页，上限放到80
+    let all=first;
     if(onProg) onProg(all.length,total);
     const rest=[]; for(let p=2;p<=pages;p++) rest.push(p);
     async function w(){ while(rest.length){ const p=rest.shift();
       try{ const j=await apiGet(urlOf(fs,p)); const d=j&&j.data&&j.data.diff;
         if(d) all=all.concat(parse(Array.isArray(d)?d:Object.values(d))); }catch(e){}
       if(onProg) onProg(all.length,total); } }
-    await Promise.all(Array.from({length:5},w));
+    await Promise.all(Array.from({length:6},w));
     return {list:all,total,err:null};
   }
   // ① 主市场（已验证可用的过滤）：沪深主板 + 创业板 + 科创板（含ST）

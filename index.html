@@ -499,7 +499,16 @@ canvas{display:block;width:100%}
     </section>
     <section class="card">
       <h2><span class="dot" style="background:var(--up)"></span>当日信号扫描 · B点买入 / S点卖出提示
-        <span class="right"><button id="scanBtn" class="btn-primary" style="font-size:12px;padding:3px 10px">↻ 重新扫描</button></span></h2>
+        <span class="right" style="display:flex;gap:6px;align-items:center">
+          <select id="scanScope" style="font-size:12px;padding:2px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--ink)">
+            <option value="all" selected>全市场·含ST/科创/创业/北交所(约20-60秒)</option>
+            <option value="sample">快速52只(接口不可用时的兜底)</option>
+          </select>
+          <select id="scanDepth" title="全市场模式下拉日K做深度指标的候选数量" style="font-size:12px;padding:2px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--ink)">
+            <option value="200">深度200</option><option value="300" selected>深度300</option><option value="500">深度500</option><option value="800">深度800</option>
+          </select>
+          <button id="scanBtn" class="btn-primary" style="font-size:12px;padding:3px 10px">↻ 重新扫描</button>
+        </span></h2>
       <div class="scan-status"><span id="scanTxt">等待数据加载后自动扫描…</span><div class="bar"><div class="f" id="scanBar"></div></div><span id="scanDate" class="num"></span></div>
       <div class="sig-sec-title c-up">▲ B点 · 买入提示<span class="cnt" id="bCnt"></span></div>
       <div style="overflow-x:auto">
@@ -766,12 +775,51 @@ function jsonp(url, ms=6000){
     document.head.appendChild(s);
   });
 }
-async function apiGet(url){
+// CORS 代理兜底：东财 push2 接口不带 CORS 头、且这些接口已不再回调 cb（JSONP 失效），
+// 直连 fetch 与 JSONP 都会失败时，用公共代理转发（代理会补上 CORS 头，返回纯 JSON）
+const CORS_PROXIES=[
+  u=>'https://corsproxy.io/?url='+encodeURIComponent(u),
+  u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u),
+  u=>'https://thingproxy.freeboard.io/fetch/'+u,
+];
+let _proxyBest=-1;   // 记住第一个成功的代理，后续直接用它，避免每次重试
+async function _viaProxy(url){
+  const order = _proxyBest>=0 ? [_proxyBest, ...CORS_PROXIES.map((_,i)=>i).filter(i=>i!==_proxyBest)]
+                              : CORS_PROXIES.map((_,i)=>i);
+  let lastErr;
+  for(const i of order){
+    try{
+      const r=await withTimeout(fetch(CORS_PROXIES[i](url)),9000);
+      if(r&&r.ok){ const t=await r.text(); if(t){ const j=JSON.parse(t); _proxyBest=i; return j; } }
+      lastErr=new Error('proxy http '+(r&&r.status));
+    }catch(e){ lastErr=e; }
+  }
+  throw lastErr||new Error('all proxies failed');
+}
+// 本地助手：若你在电脑上运行了 astock-helper.py（监听 127.0.0.1:8787），
+// 所有请求优先走它——本机直连东财，无跨域、无 JSONP、无需公共代理，全市场也稳。
+const LOCAL_PROXY='http://127.0.0.1:8787/p?url=';
+let _localOK=null;   // null=未知 / true=在跑 / false=没跑（本会话不再重试）
+async function _tryLocal(url){
+  if(_localOK===false) return null;
   try{
-    const r=await withTimeout(fetch(url,{mode:'cors'}),5000);
-    if(!r.ok) throw new Error('http '+r.status);
-    return await r.json();
-  }catch(e){ return await jsonp(url,6000); } // fetch被拦截时降级 JSONP
+    const r=await withTimeout(fetch(LOCAL_PROXY+encodeURIComponent(url)),8000);
+    if(r&&r.ok){ if(_localOK!==true){ _localOK=true; log&&log('ok','已连接本地助手 127.0.0.1:8787，全市场走本机直连'); } return await r.json(); }
+  }catch(e){ if(_localOK===null) _localOK=false; }
+  return null;
+}
+async function apiGet(url){
+  // ⓪ 本地助手（若在运行）——最稳，优先
+  const lj=await _tryLocal(url); if(lj) return lj;
+  // ① 直连 fetch（东财多数接口无 CORS 头，通常失败——但成本低，先试）
+  try{
+    const r=await withTimeout(fetch(url,{mode:'cors'}),4500);
+    if(r&&r.ok) return await r.json();
+  }catch(e){}
+  // ② JSONP（部分接口仍支持 cb 回调，若支持则最快；不支持则短超时后放弃）
+  try{ const d=await jsonp(url,3500); if(d) return d; }catch(e){}
+  // ③ CORS 代理兜底（保证在浏览器里能真正取到数据）
+  return await _viaProxy(url);
 }
 async function fetchKlines(stk, lmt){
   const url=`https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${stk.secid}`+
@@ -928,6 +976,40 @@ async function fetchTopFlow(){ // 全市场个股主力净流入 Top
   const d=j&&j.data&&j.data.diff; if(!d) throw new Error('no topflow');
   const arr=Array.isArray(d)?d:Object.values(d);
   return arr.map(x=>({code:x.f12,name:x.f14,px:+x.f2||0,pct:+x.f3||0,main:+x.f62||0,mainPct:+x.f184||0}));
+}
+async function fetchAllMarket(onProg){ // 全市场快照（沪深主板/创业/科创/北交所，含ST）
+  const fields='f2,f3,f5,f6,f8,f10,f12,f13,f14,f15,f16,f17,f18,f62,f184';
+  const pz=100;   // 东财 clist 单页硬上限≈100，请求再大也只返回100条（之前写200→少抓一半）
+  const urlOf=(fs,pn)=>`https://push2.eastmoney.com/api/qt/clist/get?pn=${pn}&pz=${pz}&po=1&np=1&fltt=2&invt=2&fid=f62&fs=${fs}&fields=${fields}`;
+  const parse=arr=>arr.map(x=>{ const mk= x.f13!=null? x.f13 : (/^6/.test(x.f12)?1:0);
+    return {code:x.f12, name:x.f14, secid:mk+'.'+x.f12,
+      px:+x.f2||0, pct:+x.f3||0, vol:+x.f5||0, amt:+x.f6||0, turn:+x.f8||0, vr:+x.f10||1,
+      h:+x.f15||0, l:+x.f16||0, o:+x.f17||0, pre:+x.f18||0, main:+x.f62||0, mainPct:+x.f184||0}; });
+  // 单个过滤条件下的全量分页抓取
+  async function grab(fs){
+    let j1; try{ j1=await apiGet(urlOf(fs,1)); }catch(e){ return {list:[],total:0,err:e.message}; }
+    const d1=j1&&j1.data; if(!d1||!d1.diff) return {list:[],total:0,err:'无返回'};
+    const first=parse(Array.isArray(d1.diff)?d1.diff:Object.values(d1.diff));
+    const total=d1.total||0;
+    const effPz=first.length||pz;                              // 用实际每页返回条数算页数，避免服务端限页导致漏抓
+    const pages=Math.min(80,Math.ceil(total/effPz)||1);         // 全市场约5400只，100/页→需~54页，上限放到80
+    let all=first;
+    if(onProg) onProg(all.length,total);
+    const rest=[]; for(let p=2;p<=pages;p++) rest.push(p);
+    async function w(){ while(rest.length){ const p=rest.shift();
+      try{ const j=await apiGet(urlOf(fs,p)); const d=j&&j.data&&j.data.diff;
+        if(d) all=all.concat(parse(Array.isArray(d)?d:Object.values(d))); }catch(e){}
+      if(onProg) onProg(all.length,total); } }
+    await Promise.all(Array.from({length:6},w));
+    return {list:all,total,err:null};
+  }
+  // ① 主市场（已验证可用的过滤）：沪深主板 + 创业板 + 科创板（含ST）
+  const main=await grab('m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23');
+  if(!main.list.length) throw new Error('全市场行情接口不可达（'+(main.err||'空')+'）。请用【下载的文件本地打开】或【网站】访问——Cowork预览/手机App沙箱禁止联网，无法拉全市场');
+  // ② 北交所（尽力而为，失败不影响主市场）
+  let bj={list:[],total:0}; try{ bj=await grab('m:0+t:81+s:2048'); }catch(e){}
+  const map={}; [...main.list,...bj.list].forEach(s=>{ if(s.code&&s.px>0) map[s.code]=s; });
+  return {list:Object.values(map), total:(main.total||0)+(bj.total||0)};
 }
 async function fetchPoolSnapshot(pool){ // 样本池实时快照（一次请求，含OHLC/竞价量）
   const secids=pool.map(p=>p.secid).join(',');
@@ -1123,7 +1205,12 @@ async function loadAll(){
   refreshAllUI();
   S.flow=null; loadFlows();                       // 当前个股主力资金
   if(!S.marketLoaded){ S.marketLoaded=true; loadMarketFlows(); }   // 板块/个股排行
-  if(!S.scannedOnce){ S.scannedOnce=true; setTimeout(()=>scanAll(false),600); } // 首次自动扫描
+  if(!S.scannedOnce){ S.scannedOnce=true; setTimeout(()=>{                       // 首次自动扫描
+    const sc=$('scanScope')&&$('scanScope').value;
+    if(sc==='all' && S.source==='live'){   // 全市场较重（数百次请求，代理下更慢）→ 不自动跑，等用户点
+      $('scanTxt').textContent='已就绪：点击「↻ 重新扫描」开始全市场扫描（约20-60秒；如卡住可切「快速52只」）';
+    } else scanAll(false);
+  },600); }
   loadStockInfo();                                // 公司名称 + 行业板块
 }
 function renderOffline(stk){
@@ -1672,7 +1759,7 @@ function buildTicker(){
     items.push({tag:'板块', txt:`主力净流入最多：${s0.name} ${(s0.main>=0?'+':'-')+fmtCN(Math.abs(s0.main))}${s0.lead?'（领涨 '+s0.lead+'）':''}；净流出最多：${s9.name} ${(s9.main>=0?'+':'-')+fmtCN(Math.abs(s9.main))}`, cls:'mkt'});
   }
   if(S.scan){
-    items.push({tag:'信号', txt:`当日扫描（${POOL.length}只样本）：${S.scan.b.length} 只触发B点买入提示 / ${S.scan.s.length} 只触发S点卖出提示`, cls:'sig'});
+    items.push({tag:'信号', txt:`当日扫描（${(S.scan.universe||POOL.length)}只${(S.scan.universe||0)>200?'·全市场':'样本'}）：${S.scan.b.length} 只触发B点买入提示 / ${S.scan.s.length} 只触发S点卖出提示`, cls:'sig'});
     const top=S.scan.b.slice(0,3).map(r=>`${r.p.name}(${r.hits.map(h=>h.rule.name).join('+')})`).join('、');
     if(top) items.push({tag:'信号', txt:`B点重点关注：${top}`, cls:'sig'});
   }
@@ -2549,22 +2636,25 @@ function renderIndCards(){
 }
 
 /* ---------------- 当日 B/S 信号扫描 ---------------- */
-function evaluateSignals(){ // 只用已启用的指标即时重算（使用缓存数据，秒级）
-  if(!S.poolA||!S.poolSnap) return;
+function evaluateSignals(){ // 遍历扫描范围（样本池或全市场），快照指标覆盖全部、K线指标覆盖有日K的
+  if(!S.poolSnap) return;
+  S.poolA=S.poolA||{};
   const active=RULES.filter(r=>r.on!==false);
   const st=S.ruleStats||{};
+  const universe=S.universe||POOL;
   const bList=[],sList=[];
-  for(const p of POOL){
-    const A=S.poolA[p.code]; if(!A) continue;
-    const i=A.k.length-1, sn=S.poolSnap[p.code]||null;
+  for(const p of universe){
+    const sn=S.poolSnap[p.code]||null, A=S.poolA[p.code]||null;
+    if(!sn&&!A) continue;
+    const i=A?A.k.length-1:0;
     const hitB=[],hitS=[];
     for(const r of active){
-      let ok=false;
-      try{ ok=r.fn(A,i,sn); }catch(e){}
+      if(!r.snap && !A) continue;                         // K线指标但该股无日K → 跳过
+      let ok=false; try{ ok=r.fn(A,i,sn); }catch(e){}
       if(!ok) continue;
       (r.bs==='B'?hitB:hitS).push({rule:r, why: typeof r.why==='function'? r.why(sn||{}) : r.why});
     }
-    const px= sn?sn.px:A.c[i], pct= sn?sn.pct:(A.k[i].pct||0);
+    const px= sn?sn.px:(A?A.c[i]:0), pct= sn?sn.pct:(A?(A.k[i].pct||0):0);
     const main= sn?sn.main:null, mainPct= sn?sn.mainPct:null;
     const wSum=hits=>hits.reduce((a,h)=>{ const s=st[h.rule.id];
       return a+(h.rule.snap?0.55:(s&&s.cnt>=5? s.win/s.cnt:0.5)); },0);
@@ -2572,65 +2662,73 @@ function evaluateSignals(){ // 只用已启用的指标即时重算（使用缓�
     if(hitS.length) sList.push({p,px,pct,main,mainPct,hits:hitS,score:hitS.length*10+wSum(hitS)});
   }
   bList.sort((a,b)=>b.score-a.score); sList.sort((a,b)=>b.score-a.score);
-  S.scan={b:bList,s:sList,date:(S.klines&&S.klines.length)?S.klines[S.klines.length-1].d:todayStrBJ()};
+  S.scan={b:bList,s:sList,date:(S.klines&&S.klines.length)?S.klines[S.klines.length-1].d:todayStrBJ(), universe:universe.length};
   renderScan(); buildTicker();
-  $('scanDate').textContent='信号日 '+S.scan.date+(S.source==='mock'?'（演示）':'')+` · 启用 ${active.length}/${RULES.length} 指标`;
+  $('scanDate').textContent='信号日 '+S.scan.date+(S.source==='mock'?'（演示）':'')+` · 范围 ${universe.length}只 · 启用 ${active.length}/${RULES.length} 指标`;
 }
 async function scanAll(force){
   if(S.scanning){ log('warn','扫描进行中，请稍候…'); return; }
   if(S.source==='offline'){ $('scanTxt').textContent='离线：无法扫描。请本地打开或启用演示模式'; return; }
+  let mode = $('scanScope')? $('scanScope').value : 'sample';
+  if(mode==='all' && S.source!=='live'){ log('warn','演示模式无全市场数据，本次按样本池扫描（请下载文件/网站实时打开使用全市场）'); mode='sample'; }
   S.scanning=true;
   const btn=$('scanBtn'); btn.disabled=true; btn.textContent='⏳ 扫描中…';
   const setP=(t,p)=>{ $('scanTxt').textContent=t; $('scanBar').style.width=p+'%'; };
-  log('info',`开始${force?'强制重新':''}扫描样本池 ${POOL.length} 只个股的当日B/S信号…`);
   try{
-    // 1) 盘口快照（东财→腾讯双源）
-    setP('获取样本池盘口快照…',5);
-    let snaps=null;
-    if(S.source==='live'){
-      try{ snaps=await fetchPoolSnapshot(POOL); }
-      catch(e){ try{ snaps=await fetchPoolSnapshotTX(POOL); log('info','样本池快照改用腾讯源'); }catch(e2){} }
-    }
-    if(!snaps){
-      if(S.demo){ snaps={}; POOL.forEach(p=>snaps[p.code]=mockSnapOf(p)); }
-      else throw new Error('双源快照均不可达');
-    }
-    S.poolSnap=snaps;
-    // 2) 日K（并发限流，双源）
-    if(!S.poolA||force){
-      S.poolA={};
-      let done=0, failed=0;
-      const CONC=6;
-      const queue=POOL.slice();
-      async function worker(){
-        while(queue.length){
-          const p=queue.shift();
-          let k=null;
-          if(S.source==='live'){
-            try{ k=await fetchKlines(p,95); }
-            catch(e){ try{ k=await fetchKlinesTX(p,95); }catch(e2){} }
-          }
-          if(!k){ if(S.demo) k=mockKlines(p,95); else { failed++; done++; continue; } }
-          S.poolA[p.code]=calcAll(k);
-          done++;
-          if(done%6===0||done===POOL.length) setP(`拉取样本池日K ${done}/${POOL.length}…`, 5+done/POOL.length*70);
-        }
-      }
+    if(mode==='all'){
+      // ===================== 全市场扫描 =====================
+      log('info','开始全市场扫描（含ST/科创/创业/北交所）…');
+      setP('拉取全市场快照…',3);
+      const {list,total}=await fetchAllMarket((n,t)=>setP(`拉取全市场快照 ${n}/${t||'…'} 只…`, 3+Math.min(32,n/(t||5400)*32)));
+      if(!list.length) throw new Error('全市场快照为空');
+      S.universe=list; const snaps={}; list.forEach(s=>snaps[s.code]=s); S.poolSnap=snaps;
+      log('ok',`全市场快照：${list.length} 只（含ST/科创/创业/北交所）`);
+      // 深度候选：主力净流入>0 且 涨幅[-4,9.8) 的前 N 名（按主力占比+量比）
+      const N=+($('scanDepth')?$('scanDepth').value:300)||300;
+      const cand=list.filter(s=>s.main>0 && s.pct>-4 && s.pct<9.8)
+        .sort((a,b)=>(b.mainPct+(b.vr||0)*2)-(a.mainPct+(a.vr||0)*2)).slice(0,N);
+      setP(`快照完成 ${list.length} 只，拉取 ${cand.length} 只深度日K…`,38);
+      S.poolA={}; let done=0,failed=0; const queue=cand.slice(); const CONC=8;
+      async function worker(){ while(queue.length){ const p=queue.shift(); let k=null;
+        try{ k=await fetchKlines(p,95); }catch(e){ try{ k=await fetchKlinesTX(p,95); }catch(e2){} }
+        if(k) S.poolA[p.code]=calcAll(k); else failed++; done++;
+        if(done%10===0||done===cand.length) setP(`深度指标日K ${done}/${cand.length}…`, 38+done/Math.max(cand.length,1)*46); } }
       await Promise.all(Array.from({length:CONC},worker));
-      if(failed) log('warn',`${failed} 只个股日K获取失败，已跳过（不使用模拟数据）`);
-    }else setP('使用已缓存样本池日K…',60);
-    patchPoolToday(snaps); // 盘中把当日实时快照合成为当日K，保证信号是“今天”的
-    await ensureIdxK();    // 大盘分水岭（CC市场过滤用）
-    // 3) 实证胜率
-    setP('计算各指标池内实证胜率…',80);
-    calcRuleStats();
-    renderIndCards();
-    // 4) 当日信号（只用已启用的指标）
-    setP('评估当日B/S触发…',92);
-    evaluateSignals();
-    setP(`扫描完成：${S.scan.b.length} 只触发B点，${S.scan.s.length} 只触发S点`,100);
-    log('ok',`信号扫描完成：B点 ${S.scan.b.length} 只 / S点 ${S.scan.s.length} 只（样本池${POOL.length}只 · ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}）`);
-    renderCCPool(); // CC选股池同步刷新
+      if(failed) log('warn',`${failed} 只候选日K获取失败已跳过`);
+      patchPoolToday(snaps); await ensureIdxK();
+      setP('计算实证胜率…',88); calcRuleStats(); renderIndCards();
+      setP('评估全市场B/S信号…',95); evaluateSignals();
+      const dn=Object.keys(S.poolA).length;
+      setP(`全市场完成：快照${list.length} / 深度${dn} · B${S.scan.b.length}/S${S.scan.s.length}`,100);
+      log('ok',`全市场扫描完成：快照覆盖 ${list.length} 只，深度指标 ${dn} 只 · B点 ${S.scan.b.length} / S点 ${S.scan.s.length}`);
+      renderCCPool();
+    } else {
+      // ===================== 样本池扫描 =====================
+      S.universe=POOL;
+      log('info',`开始${force?'强制重新':''}扫描样本池 ${POOL.length} 只…`);
+      setP('获取样本池盘口快照…',5);
+      let snaps=null;
+      if(S.source==='live'){ try{ snaps=await fetchPoolSnapshot(POOL); }catch(e){ try{ snaps=await fetchPoolSnapshotTX(POOL); log('info','样本池快照改用腾讯源'); }catch(e2){} } }
+      if(!snaps){ if(S.demo){ snaps={}; POOL.forEach(p=>snaps[p.code]=mockSnapOf(p)); } else throw new Error('双源快照均不可达'); }
+      S.poolSnap=snaps;
+      if(!S.poolA||force||S._lastMode==='all'){
+        S.poolA={}; let done=0, failed=0; const CONC=6; const queue=POOL.slice();
+        async function worker(){ while(queue.length){ const p=queue.shift(); let k=null;
+          if(S.source==='live'){ try{ k=await fetchKlines(p,95); }catch(e){ try{ k=await fetchKlinesTX(p,95); }catch(e2){} } }
+          if(!k){ if(S.demo) k=mockKlines(p,95); else { failed++; done++; continue; } }
+          S.poolA[p.code]=calcAll(k); done++;
+          if(done%6===0||done===POOL.length) setP(`拉取样本池日K ${done}/${POOL.length}…`, 5+done/POOL.length*70); } }
+        await Promise.all(Array.from({length:CONC},worker));
+        if(failed) log('warn',`${failed} 只个股日K获取失败，已跳过`);
+      }else setP('使用已缓存样本池日K…',60);
+      patchPoolToday(snaps); await ensureIdxK();
+      setP('计算各指标池内实证胜率…',80); calcRuleStats(); renderIndCards();
+      setP('评估当日B/S触发…',92); evaluateSignals();
+      setP(`扫描完成：${S.scan.b.length} 只B点，${S.scan.s.length} 只S点`,100);
+      log('ok',`样本池扫描完成：B点 ${S.scan.b.length} / S点 ${S.scan.s.length}（${POOL.length}只 · ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}）`);
+      renderCCPool();
+    }
+    S._lastMode=mode;
   }catch(e){
     setP('扫描失败：'+e.message,0);
     log('err','信号扫描失败：'+e.message);
@@ -2672,15 +2770,27 @@ function renderScan(){
   const prov=signalsProvisional();
   $('bCnt').innerHTML=`共 ${S.scan.b.length} 只${S.scan.b.length>15?'，展示前15':''}`+(prov?' <span style="color:var(--warn)">⚠未收盘·待确认</span>':'');
   $('sCnt').textContent=`共 ${S.scan.s.length} 只${S.scan.s.length>15?'，展示前15':''}`;
+  const uniN=(S.scan&&S.scan.universe)||POOL.length, deepN=S.poolA?Object.keys(S.poolA).length:0;
+  const scopeTxt= uniN>200
+    ? `扫描范围：<b>全市场 ${uniN} 只</b>（含ST/科创/创业/北交所）。资金/量比/涨停基因等<b>快照类指标覆盖全部</b>；MACD/KDJ/均线/布林/CC等需日K的<b>深度指标覆盖资金最活跃的 ${deepN} 只候选</b>（浏览器无法为全市场逐只拉日K，故取主力资金最强的一批做深度分析）。`
+    : `扫描范围：沪深两市 ${uniN} 只样本池（可切换"全市场"）。`;
   $('scanNote').innerHTML= (prov
     ? '<span style="color:var(--warn)">⚠ 盘中未收盘：以上B/S信号基于<b>尚未走完的当日K线</b>实时合成，收盘前形态可能变化（信号重绘）。请勿盘中据此挂单，务必等<b>收盘确认或次日集合竞价</b>再执行。</span><br>'
-    : '')+'扫描样本池：沪深两市52只代表性个股（可自行扩充）。信号基于最新收盘K线与盘口快照计算，多指标共振（★）优先展示。提示仅供量化研究参考，不构成投资建议。';
+    : '')+scopeTxt+'信号基于最新收盘K线与盘口快照计算，多指标共振（★）优先展示。提示仅供量化研究参考，不构成投资建议。';
 }
 $('scanBtn').addEventListener('click',()=>{
   if(S.scanning){ log('warn','扫描进行中，请稍候…'); return; }
-  log('info','手动重新扫描：将强制刷新样本池快照与日K数据');
+  _localOK=null;   // 每次手动扫描都重新探测本地助手（先开网页后开助手也没关系）
+  const mode=$('scanScope').value;
+  log('info', mode==='all'?'手动全市场扫描：约需20-60秒（拉全市场快照+候选日K）':'手动重新扫描样本池');
   loadMarketFlows(); scanAll(true);
 });
+$('scanScope').addEventListener('change',()=>{
+  if(S.scanning) return;
+  if($('scanScope').value==='all' && S.source==='live') log('info','已切换全市场模式，点击「↻ 重新扫描」开始（较慢，请耐心）');
+  scanAll(true);
+});
+$('scanDepth').addEventListener('change',()=>{ if(!S.scanning && $('scanScope').value==='all') scanAll(true); });
 
 /* ================================================================
    PART 7 — 集合竞价异动指标 / 竞价窗口 / 早盘策略 / 实时保障
@@ -3103,10 +3213,10 @@ function ccCalc(k){
 }
 // —— CC选股池渲染（v2：信号首日过滤 / 下轨企稳 / 实证胜率 / 大盘过滤 / 竞价确认） ——
 const CC_S_TAGS=[['铡刀','断头铡刀'],['卖出','卖出'],['波段卖出','波段卖出'],['高抛','高抛'],['高减','高减'],['触上轨','触上轨减仓']];
-function calcCCStats(){ // 池内实证：CC信号历史5日胜率
+function calcCCStats(){ // 池内实证：CC信号历史5日胜率（覆盖有日K的全部个股）
   const st={broad:{cnt:0,win:0,sum:0}, strict:{cnt:0,win:0,sum:0}};
-  for(const p of POOL){
-    const A=S.poolA[p.code]; if(!A||A.k.length<45) continue;
+  for(const code in S.poolA){
+    const A=S.poolA[code]; if(!A||A.k.length<45) continue;
     const X=ccCalc(A.k); const n=A.k.length;
     for(let i=30;i<n-5;i++){
       const 岭升=X.分水岭[i]!=null&&X.分水岭[i]>=X.分水岭[i-1]*0.998;
@@ -3137,10 +3247,13 @@ function renderCCPool(){
     $('ccMkt').innerHTML=`大盘分水岭 <span style="color:${mktUp?'var(--up)':'var(--down)'}">${mktUp?'↑ 向上·顺势':'↓ 向下·谨慎'}</span>`;
   } else $('ccMkt').textContent='';
   const bRows=[],sRows=[];
-  for(const p of POOL){
-    const A=S.poolA[p.code]; if(!A||A.k.length<40) continue;
+  const uni=S.universe||POOL;
+  const uniStock=code=> uni.find(x=>x.code===code) || POOL.find(x=>x.code===code) || mkStock(code,'');
+  for(const code in S.poolA){
+    const p=uniStock(code);
+    const A=S.poolA[code]; if(!A||A.k.length<40) continue;
     const X=ccCalc(A.k); const i=A.k.length-1;
-    const sn=S.poolSnap&&S.poolSnap[p.code];
+    const sn=S.poolSnap&&S.poolSnap[code];
     const px=sn?sn.px:A.c[i], pct=sn?sn.pct:(A.k[i].pct||0);
     // 信号首日过滤：近3日出现过同类信号的不重复入池（画线公式→选股信号的关键修正）
     const first=key=>{ for(let j=Math.max(0,i-3);j<i;j++) if(X.sig[key][j]) return false; return true; };
@@ -3186,7 +3299,8 @@ function renderCCPool(){
     return `${o.cnt}次 · 5日胜率 <b style="color:${rate>=0.55?'var(--up)':rate>=0.45?'var(--s2)':'var(--down)'}">${(rate*100).toFixed(1)}%</b>`+
       (d!=null?` <span style="color:${dc}">(超基准${d>=0?'+':''}${(d*100).toFixed(1)}pp)</span>`:'')+
       ` · 均益 <b>${fmtPct(o.sum/o.cnt,true)}</b>`; };
-  $('ccStats').innerHTML=`池内实证（52只×近90日，5日持有${base!=null?`；随机持有<b>基准胜率 ${(base*100).toFixed(1)}%</b>`:''}）：宽口径（红箭头/白K·首日+岭升）${pf(st.broad)}；严格「买入」共振 ${pf(st.strict)}。${S.source==='mock'?'<span style="color:var(--warn)">（演示数据口径，实盘请以本地打开的实时数据为准）</span>':''}`;
+  const ccN=S.poolA?Object.keys(S.poolA).length:0;
+  $('ccStats').innerHTML=`池内实证（${ccN}只×近90日，5日持有${base!=null?`；随机持有<b>基准胜率 ${(base*100).toFixed(1)}%</b>`:''}）：宽口径（红箭头/白K·首日+岭升）${pf(st.broad)}；严格「买入」共振 ${pf(st.strict)}。${S.source==='mock'?'<span style="color:var(--warn)">（演示数据口径，实盘请以本地打开的实时数据为准）</span>':''}`;
   const fill=(tb,rows,tags,empty)=>{
     tb.innerHTML='';
     if(!rows.length){ tb.innerHTML=`<tr><td colspan="7" class="empty-hint">${empty}</td></tr>`; return; }
