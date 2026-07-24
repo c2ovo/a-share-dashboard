@@ -814,6 +814,13 @@ async function _tryLocal(url){
   return null;
 }
 async function apiGet(url){
+  // 已确认本地助手在跑：所有请求只走它（更长超时，失败直接抛给上层重试），
+  // 不再浪费时间去试被墙的公共代理——否则每个失败页要拖几十秒，全市场必然掉页
+  if(_localOK===true){
+    const r=await withTimeout(fetch(LOCAL_PROXY+encodeURIComponent(url)),13000);
+    if(r&&r.ok) return await r.json();
+    throw new Error('本地助手请求失败');
+  }
   // ⓪ 本地助手（若在运行）——最稳，优先
   const lj=await _tryLocal(url); if(lj) return lj;
   // ① 直连 fetch（东财多数接口无 CORS 头，通常失败——但成本低，先试）
@@ -1026,7 +1033,8 @@ async function fetchAllMarket(onProg){ // 全市场快照（沪深主板/创业/
     return {code:x.f12, name:x.f14, secid:mk+'.'+x.f12,
       px:+x.f2||0, pct:+x.f3||0, vol:+x.f5||0, amt:+x.f6||0, turn:+x.f8||0, vr:+x.f10||1,
       h:+x.f15||0, l:+x.f16||0, o:+x.f17||0, pre:+x.f18||0, main:+x.f62||0, mainPct:+x.f184||0}; });
-  // 单个过滤条件下的全量分页抓取
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  // 单个过滤条件下的全量分页抓取（每页带重试，失败页不再静默丢弃——否则每次少抓、数目跳来跳去）
   async function grab(fs){
     let j1; try{ j1=await apiGet(urlOf(fs,1)); }catch(e){ return {list:[],total:0,err:e.message}; }
     const d1=j1&&j1.data; if(!d1||!d1.diff) return {list:[],total:0,err:'无返回'};
@@ -1036,13 +1044,24 @@ async function fetchAllMarket(onProg){ // 全市场快照（沪深主板/创业/
     const pages=Math.min(80,Math.ceil(total/effPz)||1);         // 全市场约5400只，100/页→需~54页，上限放到80
     let all=first;
     if(onProg) onProg(all.length,total);
+    async function fetchPage(p){                                // 单页最多试3次，成功累加、返回true
+      for(let att=0; att<3; att++){
+        try{ const j=await apiGet(urlOf(fs,p)); const d=j&&j.data&&j.data.diff;
+          const rows=d? parse(Array.isArray(d)?d:Object.values(d)) : null;
+          if(rows&&rows.length){ all=all.concat(rows); if(onProg) onProg(all.length,total); return true; }
+        }catch(e){}
+        await sleep(250*(att+1));
+      }
+      return false;
+    }
     const rest=[]; for(let p=2;p<=pages;p++) rest.push(p);
-    async function w(){ while(rest.length){ const p=rest.shift();
-      try{ const j=await apiGet(urlOf(fs,p)); const d=j&&j.data&&j.data.diff;
-        if(d) all=all.concat(parse(Array.isArray(d)?d:Object.values(d))); }catch(e){}
-      if(onProg) onProg(all.length,total); } }
-    await Promise.all(Array.from({length:6},w));
-    return {list:all,total,err:null};
+    let failed=[];
+    async function w(){ while(rest.length){ const p=rest.shift(); const ok=await fetchPage(p); if(!ok) failed.push(p); } }
+    await Promise.all(Array.from({length:5},w));                // 并发5路（太高易被限流丢页）
+    // 兜底：把仍然失败的页再串行重试一轮
+    if(failed.length){ const again=failed; failed=[];
+      for(const p of again){ const ok=await fetchPage(p); if(!ok) failed.push(p); } }
+    return {list:all, total, err:null, missPages:failed.length};
   }
   // ① 主市场（已验证可用的过滤）：沪深主板 + 创业板 + 科创板（含ST）
   const main=await grab('m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23');
@@ -1050,7 +1069,7 @@ async function fetchAllMarket(onProg){ // 全市场快照（沪深主板/创业/
   // ② 北交所（尽力而为，失败不影响主市场）
   let bj={list:[],total:0}; try{ bj=await grab('m:0+t:81+s:2048'); }catch(e){}
   const map={}; [...main.list,...bj.list].forEach(s=>{ if(s.code&&s.px>0) map[s.code]=s; });
-  return {list:Object.values(map), total:(main.total||0)+(bj.total||0)};
+  return {list:Object.values(map), total:(main.total||0)+(bj.total||0), miss:(main.missPages||0)+(bj.missPages||0)};
 }
 async function fetchPoolSnapshot(pool){ // 样本池实时快照（一次请求，含OHLC/竞价量）
   const secids=pool.map(p=>p.secid).join(',');
@@ -2722,9 +2741,10 @@ async function scanAll(force){
       // ===================== 全市场扫描 =====================
       log('info','开始全市场扫描（含ST/科创/创业/北交所）…');
       setP('拉取全市场快照…',3);
-      const {list,total}=await fetchAllMarket((n,t)=>setP(`拉取全市场快照 ${n}/${t||'…'} 只…`, 3+Math.min(32,n/(t||5400)*32)));
+      const {list,total,miss}=await fetchAllMarket((n,t)=>setP(`拉取全市场快照 ${n}/${t||'…'} 只…`, 3+Math.min(32,n/(t||5400)*32)));
       if(!list.length) throw new Error('全市场快照为空');
       S.universe=list; const snaps={}; list.forEach(s=>snaps[s.code]=s); S.poolSnap=snaps;
+      if(miss) log('warn',`网络波动导致 ${miss} 页(每页~100只)重试后仍未取到，本次覆盖 ${list.length} 只（应约${total}）。再点一次「重新扫描」通常即可补齐。`);
       log('ok',`全市场快照：${list.length} 只（含ST/科创/创业/北交所）`);
       // 深度候选：主力净流入>0 且 涨幅[-4,9.8) 的前 N 名（按主力占比+量比）
       const N=+($('scanDepth')?$('scanDepth').value:300)||300;
