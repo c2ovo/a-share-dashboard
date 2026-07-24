@@ -302,6 +302,10 @@ canvas{display:block;width:100%}
 </style>
 </head>
 <body>
+<div id="buyToast" style="display:none;position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:200;
+  background:rgba(20,20,19,.97);border:1px solid var(--up);border-left:4px solid var(--up);border-radius:10px;
+  padding:11px 16px;box-shadow:0 10px 40px rgba(0,0,0,.6);font-size:13px;max-width:520px;line-height:1.6"></div>
+
 <div class="dash">
 
   <div class="net-banner" id="netBanner">⚠ <b>无法连接实时行情接口</b>（东方财富与腾讯双源均不可达，当前环境可能禁止访问外网）。按您的要求，页面<b>不会静默使用模拟数据</b>。请<b>下载本文件后用本地浏览器打开</b>获取全实时数据；或
@@ -321,6 +325,7 @@ canvas{display:block;width:100%}
     <span id="dataTs" class="badge">行情时间 —</span>
     <button id="aucBtn" class="hd-btn">◷ 竞价窗口</button>
     <button id="planBtn" class="hd-btn">☀ 早盘策略</button>
+    <button id="alertBtn" class="hd-btn">🔔 买点提示：开</button>
     <div class="hd-quote">
       <span id="qName" style="font-weight:600"></span>
       <span id="qInd" class="badge" style="display:none"></span>
@@ -336,7 +341,7 @@ canvas{display:block;width:100%}
     <section class="card">
       <h2><span class="dot"></span>分时走势<span class="right" id="trendsSub"></span></h2>
       <div class="chart-wrap">
-        <canvas id="trendsCv" height="420"></canvas>
+        <canvas id="trendsCv" height="500"></canvas>
         <div class="tooltip" id="trendsTip"></div>
       </div>
       <div class="ticker"><div class="ticker-track" id="tickerTrack"></div></div>
@@ -371,6 +376,94 @@ canvas{display:block;width:100%}
           <div class="posbar"><div class="fill" id="sPosBar" style="width:0%"></div></div>
           <div class="s" id="sPosSub"></div></div>
       </div>
+    </aside>
+  </div>
+
+  <!-- ============ 日线K线（上移至分时下方 · 位于策略引擎上方） ============ -->
+  <section class="card">
+    <h2><span class="dot" style="background:var(--up)"></span>日线K线 · 策略回测推演<span class="right" id="kSub"></span></h2>
+    <div class="k-controls">
+      <button id="playBtn" class="play btn-primary">▶ 播放</button>
+      <select id="speedSel"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option><option value="8">8×</option></select>
+      <input type="range" id="kProg" min="20" max="100" value="20">
+      <span class="kc-info num" id="kInfo"></span>
+      <button id="kEndBtn" style="font-size:12px">跳至最新</button>
+    </div>
+    <div class="legend">
+      <span class="li"><span class="swb" style="background:var(--up)"></span>阳线(涨)</span>
+      <span class="li"><span class="swb" style="background:var(--down)"></span>阴线(跌)</span>
+      <span class="li"><span class="sw" style="background:var(--s1)"></span>MA5</span>
+      <span class="li"><span class="sw" style="background:var(--s2)"></span>MA10</span>
+      <span class="li"><span class="sw" style="background:var(--s3)"></span>MA20</span>
+      <span class="li" style="color:var(--up)">▲ B 买入</span>
+      <span class="li" style="color:var(--down)">▼ S 卖出</span>
+      <span class="li"><span class="sw" style="background:#ffbf3f"></span>动态止损线(吊灯/均线)</span>
+      <span class="li"><span class="sw" style="background:var(--ink2)"></span>策略净值</span>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="klineCv" height="430"></canvas>
+      <div class="tooltip" id="klineTip"></div>
+    </div>
+  </section>
+
+  <!-- ============ 策略生成引擎（上移至日K下方） ============ -->
+  <div class="row2">
+    <section class="card">
+      <h2><span class="dot" style="background:var(--s3)"></span>策略生成引擎<span class="right">参数 → 生成 → 对比 → 回测</span></h2>
+      <div class="se-form">
+        <div class="se-field"><label>策略类型</label>
+          <select id="pStrat">
+            <option value="ma">双均线趋势</option>
+            <option value="macd">MACD 金叉死叉</option>
+            <option value="rsi">RSI 超卖反转</option>
+            <option value="boll">布林带突破</option>
+            <option value="cc">CC分水岭波段</option>
+            <option value="dyn">★ 动态趋势(自适应离场)</option>
+          </select></div>
+        <div class="se-field"><label>短周期 / 指标周期</label><input id="pFast" type="number" value="5" min="2" max="60"></div>
+        <div class="se-field"><label>长周期 / 上下轨</label><input id="pSlow" type="number" value="20" min="5" max="120"></div>
+        <div class="se-field"><label title="固定=用下方止损止盈%；ATR吊灯=动态跟踪止损，随价格上移只升不降">止损方式 <span style="color:var(--muted)">ⓘ</span></label>
+          <select id="pExit">
+            <option value="fixed">固定比例</option>
+            <option value="atr" selected>ATR吊灯(动态跟踪)</option>
+            <option value="atr_be">保本+ATR吊灯</option>
+            <option value="ma">跟踪MA10均线</option>
+          </select></div>
+        <div class="se-field" id="fSL"><label>止损 %</label><input id="pSL" type="number" value="7" min="0" max="30" step="0.5"></div>
+        <div class="se-field" id="fTP"><label>止盈 %</label><input id="pTP" type="number" value="18" min="0" max="100" step="0.5"></div>
+        <div class="se-field" id="fAtrN"><label>ATR倍数 N</label><input id="pAtrN" type="number" value="3" min="1" max="8" step="0.5"></div>
+        <div class="se-field"><label>回测天数</label>
+          <select id="pDays"><option value="30">30</option><option value="60">60</option><option value="120" selected>120</option><option value="250">250</option></select></div>
+      </div>
+      <div class="se-actions">
+        <button id="aiBtn" class="btn-primary">✦ AI 生成策略</button>
+        <button id="runBtn">运行回测</button>
+        <button id="cmpBtn">多策略对比</button>
+        <button id="rptBtn">回测报告</button>
+        <span id="seStatus" style="font-size:12px;color:var(--muted)"></span>
+      </div>
+      <div class="ai-box" id="aiBox"></div>
+      <div style="overflow-x:auto">
+        <table class="se-table">
+          <thead><tr><th>策略</th><th>总收益</th><th>年化</th><th>最大回撤</th><th>胜率</th><th>盈亏比</th><th>夏普</th><th>交易次数</th><th></th></tr></thead>
+          <tbody id="cmpBody"><tr><td colspan="9" style="text-align:center;color:var(--muted);padding:18px">加载数据后自动运行对比…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="tbl-note">点击行选择策略 → 上方K线图标注该策略买卖信号。回测含 A股规则：T+1、涨跌停无法成交、佣金万2.5、卖出印花税 0.05%。</div>
+    </section>
+
+    <aside class="right-stack">
+      <section class="card">
+        <h2><span class="dot" style="background:var(--good)"></span>运行日志<span class="right" id="logCount"></span></h2>
+        <div class="logs" id="logs"></div>
+      </section>
+      <section class="card">
+        <h2><span class="dot" style="background:var(--up)"></span>多空机会指示器<span class="right">近20个交易日</span></h2>
+        <div class="ls-days" id="lsDays"></div>
+        <div class="ls-meter"><div class="b-up" id="lsUp" style="width:50%"></div><div class="b-dn" id="lsDn"></div></div>
+        <div class="ls-stats"><span class="c-up" id="lsUpTxt">阳线 —</span><span class="num" id="lsCum"></span><span class="c-down" id="lsDnTxt">阴线 —</span></div>
+        <div class="ls-verdict" id="lsVerdict">—</div>
+      </section>
     </aside>
   </div>
 
@@ -446,84 +539,6 @@ canvas{display:block;width:100%}
       <tbody id="ccSBody"><tr><td colspan="7" class="empty-hint">—</td></tr></tbody></table>
     </div>
     <div class="tbl-note">口径说明：公式1:1转译自您提供的通达信源码（N=17,M=18）并做四项选股化修正——①上攻/红箭头/白K仅取<b>信号首日</b>（近3日重复触发不再入池，避免画线公式连续染色导致趋势中段误报）；②「下轨超跌」须<b>止跌企稳</b>（收阳或跌幅收窄）且分水岭未加速下行才入池；③买入池行叠加<b>竞价确认✓/竞价风险✗</b>（T+1次日执行，竞价诱多则放弃）；④右上角<b>大盘分水岭</b>方向可一键过滤逆势信号。信号仅供研究参考。</div>
-  </section>
-
-  <!-- ============ ROW 2 ============ -->
-  <div class="row2">
-    <section class="card">
-      <h2><span class="dot" style="background:var(--s3)"></span>策略生成引擎<span class="right">参数 → 生成 → 对比 → 回测</span></h2>
-      <div class="se-form">
-        <div class="se-field"><label>策略类型</label>
-          <select id="pStrat">
-            <option value="ma">双均线趋势</option>
-            <option value="macd">MACD 金叉死叉</option>
-            <option value="rsi">RSI 超卖反转</option>
-            <option value="boll">布林带突破</option>
-            <option value="cc">CC分水岭波段</option>
-          </select></div>
-        <div class="se-field"><label>短周期 / 指标周期</label><input id="pFast" type="number" value="5" min="2" max="60"></div>
-        <div class="se-field"><label>长周期 / 上下轨</label><input id="pSlow" type="number" value="20" min="5" max="120"></div>
-        <div class="se-field"><label>止损 %</label><input id="pSL" type="number" value="7" min="0" max="30" step="0.5"></div>
-        <div class="se-field"><label>止盈 %</label><input id="pTP" type="number" value="18" min="0" max="100" step="0.5"></div>
-        <div class="se-field"><label>回测天数</label>
-          <select id="pDays"><option value="120">120</option><option value="250" selected>250</option><option value="500">500</option></select></div>
-      </div>
-      <div class="se-actions">
-        <button id="aiBtn" class="btn-primary">✦ AI 生成策略</button>
-        <button id="runBtn">运行回测</button>
-        <button id="cmpBtn">多策略对比</button>
-        <button id="rptBtn">回测报告</button>
-        <span id="seStatus" style="font-size:12px;color:var(--muted)"></span>
-      </div>
-      <div class="ai-box" id="aiBox"></div>
-      <div style="overflow-x:auto">
-        <table class="se-table">
-          <thead><tr><th>策略</th><th>总收益</th><th>年化</th><th>最大回撤</th><th>胜率</th><th>盈亏比</th><th>夏普</th><th>交易次数</th><th></th></tr></thead>
-          <tbody id="cmpBody"><tr><td colspan="9" style="text-align:center;color:var(--muted);padding:18px">加载数据后自动运行对比…</td></tr></tbody>
-        </table>
-      </div>
-      <div class="tbl-note">点击行选择策略 → 下方K线图标注该策略买卖信号。回测含 A股规则：T+1、涨跌停无法成交、佣金万2.5、卖出印花税 0.05%。</div>
-    </section>
-
-    <aside class="right-stack">
-      <section class="card">
-        <h2><span class="dot" style="background:var(--good)"></span>运行日志<span class="right" id="logCount"></span></h2>
-        <div class="logs" id="logs"></div>
-      </section>
-      <section class="card">
-        <h2><span class="dot" style="background:var(--up)"></span>多空机会指示器<span class="right">近20个交易日</span></h2>
-        <div class="ls-days" id="lsDays"></div>
-        <div class="ls-meter"><div class="b-up" id="lsUp" style="width:50%"></div><div class="b-dn" id="lsDn"></div></div>
-        <div class="ls-stats"><span class="c-up" id="lsUpTxt">阳线 —</span><span class="num" id="lsCum"></span><span class="c-down" id="lsDnTxt">阴线 —</span></div>
-        <div class="ls-verdict" id="lsVerdict">—</div>
-      </section>
-    </aside>
-  </div>
-
-  <!-- ============ ROW 3 ============ -->
-  <section class="card">
-    <h2><span class="dot" style="background:var(--up)"></span>日线K线 · 策略回测推演<span class="right" id="kSub"></span></h2>
-    <div class="k-controls">
-      <button id="playBtn" class="play btn-primary">▶ 播放</button>
-      <select id="speedSel"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option><option value="8">8×</option></select>
-      <input type="range" id="kProg" min="20" max="100" value="20">
-      <span class="kc-info num" id="kInfo"></span>
-      <button id="kEndBtn" style="font-size:12px">跳至最新</button>
-    </div>
-    <div class="legend">
-      <span class="li"><span class="swb" style="background:var(--up)"></span>阳线(涨)</span>
-      <span class="li"><span class="swb" style="background:var(--down)"></span>阴线(跌)</span>
-      <span class="li"><span class="sw" style="background:var(--s1)"></span>MA5</span>
-      <span class="li"><span class="sw" style="background:var(--s2)"></span>MA10</span>
-      <span class="li"><span class="sw" style="background:var(--s3)"></span>MA20</span>
-      <span class="li" style="color:var(--up)">▲ B 买入</span>
-      <span class="li" style="color:var(--down)">▼ S 卖出</span>
-      <span class="li"><span class="sw" style="background:var(--ink2)"></span>策略净值</span>
-    </div>
-    <div class="chart-wrap">
-      <canvas id="klineCv" height="430"></canvas>
-      <div class="tooltip" id="klineTip"></div>
-    </div>
   </section>
 
 </div>
@@ -1200,12 +1215,155 @@ function refreshHeader(){
 /* ---------------- 分时图（价格/均价 + 分时量 + 分钟MACD 三窗格） ---------------- */
 const TOTAL_MIN=241; // 09:30-11:30 + 13:00-15:00
 function trendsLayout(){
-  const cv=$('trendsCv'); const {ctx,w,h}=setCanvasSize(cv,420);
+  const cv=$('trendsCv'); const {ctx,w,h}=setCanvasSize(cv,500);
   const inner=h-34, pt=8;
-  const priceB=pt+Math.round(inner*0.52);
-  const volT=priceB+14, volB=volT+Math.round(inner*0.17);
-  const macT=volB+14, macB=h-26;
-  return {cv,ctx,w,h, pl:52, pr:52, pt, priceB, volT, volB, macT, macB};
+  const priceB=pt+Math.round(inner*0.46);
+  const volT=priceB+12, volB=volT+Math.round(inner*0.14);
+  const macT=volB+12, macB=macT+Math.round(inner*0.14);
+  const dfT=macB+12, dfB=h-26;
+  return {cv,ctx,w,h, pl:52, pr:52, pt, priceB, volT, volB, macT, macB, dfT, dfB};
+}
+// 主力资金(超大单+大单)按【时间】对齐到分时点（修复下标错位）：mCum累计净流入 / mInc分钟净额
+function alignFlow(pts){
+  const n=pts.length, mCum=new Array(n).fill(0), mInc=new Array(n).fill(0);
+  const flow=S.flow&&S.flow.minute;
+  if(!flow||!flow.length) return {mCum, mInc, has:false};
+  const map={}; flow.forEach(f=>{ if(f&&f.t!=null) map[f.t]=f.main; });      // 按时间建索引
+  let last=flow[0].main||0, seen=false;
+  for(let i=0;i<n;i++){ const v=map[pts[i].t]; if(v!=null){ last=v; seen=true; } mCum[i]=last; }
+  for(let i=1;i<n;i++) mInc[i]=mCum[i]-mCum[i-1];                            // 分钟净额=累计差分
+  return {mCum, mInc, has:seen};
+}
+// 聚合分时点为 span 分钟 bar
+function aggMin(pts, span){
+  const bars=[];
+  for(let i=0;i<pts.length;i+=span){
+    const seg=pts.slice(i,i+span); if(!seg.length) break;
+    bars.push({ endIdx:Math.min(i+span-1,pts.length-1), c:seg[seg.length-1].p,
+      h:Math.max(...seg.map(s=>s.p)), l:Math.min(...seg.map(s=>s.p)), v:seg.reduce((a,s)=>a+s.v,0) });
+  }
+  return bars;
+}
+// 盘中买点 v4：暗盘资金领先驱动（无隐性资金流入不给买点）——资金先行=抓得更准
+function computeIntradayBuys(pts, pre){
+  S.intraValid=null;
+  if(!pts||pts.length<25) return [];
+  const n=pts.length;
+  const px=pts.map(p=>p.p), vwap=pts.map(p=>p.avg), vol=pts.map(p=>p.v);
+  const volMA=[]; for(let i=0;i<n;i++){ let s=0,c=0; for(let j=Math.max(0,i-19);j<=i;j++){s+=vol[j];c++;} volMA.push(s/Math.max(c,1)); }
+  const af=alignFlow(pts), hasFlow=af.has, mCum=af.mCum;   // 按时间对齐（修复错位）
+  const mHigh=[]; { let hi=-Infinity; for(let i=0;i<n;i++){ hi=Math.max(hi,mCum[i]); mHigh.push(hi);} }
+  const idx=S.idxTrend&&S.idxTrend.points;
+  const marketState=i=>{ if(S.stock.index) return 1; if(!idx||!idx.length) return 1;
+    const q=idx[Math.min(i,idx.length-1)]; if(!q) return 1; return q.p>=q.avg? 1 : (q.p>=q.avg*0.997? 0 : -1); };
+  const M=15;                                        // 暗盘资金观察窗口（分钟）
+  const raw=[]; const T0=10, T1=n-3;
+  for(let i=Math.max(15,T0); i<Math.min(n,T1); i++){
+    // —— 暗盘资金硬门槛：近M分钟主力(隐性)净流入>0 ——
+    const capInflow = hasFlow? (mCum[i]-mCum[Math.max(0,i-M)]>0) : true;
+    if(hasFlow && !capInflow) continue;              // 没有暗盘资金撑腰，直接跳过
+    const capNewHigh = hasFlow? (mCum[i]>=mHigh[i-1] && mCum[i]>mCum[Math.max(0,i-M)]) : false;
+    // 背离吸筹：资金创新高但价格未同步创新高
+    let pxHi=-Infinity; for(let j=Math.max(0,i-M);j<=i;j++) pxHi=Math.max(pxHi,px[j]);
+    const stealth = capNewHigh && px[i]<=pxHi*1.001;
+    const heavy = vol[i]>volMA[i]*1.4;
+    const trendUp = vwap[i]>=vwap[i-5]*0.9995 && px[i]>=vwap[i]*0.998;
+    const ms=marketState(i);
+    // —— 入场类型（都要求暗盘资金流入）——
+    let type=null; const reasons=[];
+    if(stealth && px[i]>px[i-1] && px[i]>=vwap[i]*0.997){
+      type='暗盘吸筹启动'; reasons.push('主力隐性资金创新高·价未跟涨(吸筹)','资金领先·价格启动'); }
+    else if(px[i-1]<vwap[i-1] && px[i]>=vwap[i] && heavy){
+      type='放量收复均价'; reasons.push('带量站上均价','暗盘资金同步流入'); }
+    else if(trendUp && Math.min(px[i-1],px[i-2])<=vwap[i]*1.004 && px[i]>px[i-1]){
+      type='回踩均价企稳'; reasons.push('回踩均价获支撑','资金未流出'); }
+    else if(capNewHigh && px[i]>=vwap[i] && px[i]>px[i-1]){
+      type='资金创新高领涨'; reasons.push('主力累计净流入创当日新高'); }
+    if(!type) continue;
+    // 计分（暗盘资金已占核心1分）
+    let fam=1;
+    if(trendUp){ fam++; reasons.push('均价上·趋势顺'); }
+    if(heavy){ fam++; reasons.push('放量'); }
+    if(capNewHigh){ fam++; if(!reasons.some(r=>r.includes('新高'))) reasons.push('资金创新高'); }
+    // 分级：强买=暗盘吸筹启动+3家族+大盘强（稀有）；买点=3家族或吸筹类；关注=2家族
+    let rank = (type==='暗盘吸筹启动'&&fam>=3&&ms>=1&&heavy)?3
+             : ((fam>=3&&ms>=0)||(type==='暗盘吸筹启动'&&ms>=0))?2 : 1;
+    if(ms<0) rank=Math.min(rank,1);
+    reasons.push(ms>=1?'大盘偏强':ms===0?'大盘中性':'大盘走弱');
+    raw.push({idx:i, t:pts[i].t, price:px[i], type, reasons, strength:fam, rank, grade:['','关注','买点','强买'][rank]});
+  }
+  // 冷却：20分钟内保留高级别（更稀、更精）
+  raw.sort((a,b)=>a.idx-b.idx); const out=[];
+  for(const b of raw){ const last=out[out.length-1];
+    if(last&&b.idx-last.idx<20){ if(b.rank>last.rank||(b.rank===last.rank&&b.strength>last.strength)) out[out.length-1]=b; } else out.push(b); }
+  // 当日前向30分钟验证
+  const H=30; let bWin=0,bCnt=0,bSum=0;
+  for(let i=T0;i<n-H;i++){ const r=px[i+H]/px[i]-1; bCnt++; bSum+=r; if(r>0)bWin++; }
+  out.forEach(b=>{ if(b.idx+H<n){ b.fwd=px[b.idx+H]/px[b.idx]-1; b.win=b.fwd>0; } });
+  const ver=out.filter(b=>b.fwd!=null);
+  S.intraValid={ base:bCnt?bWin/bCnt:null, verified:ver.length, win:ver.filter(b=>b.win).length,
+    avg:ver.length?ver.reduce((a,b)=>a+b.fwd,0)/ver.length:null, H };
+  return out;
+}
+/* ---------------- 买点提示（弹窗+提示音+桌面通知）---------------- */
+S.alertOn=true; S.alertSeen={};
+function beep(){
+  try{ S._ac=S._ac||new (window.AudioContext||window.webkitAudioContext)();
+    const ac=S._ac; const o=ac.createOscillator(), g=ac.createGain();
+    o.type='sine'; o.frequency.value=880; o.connect(g); g.connect(ac.destination);
+    g.gain.setValueAtTime(0.001,ac.currentTime); g.gain.exponentialRampToValueAtTime(0.25,ac.currentTime+0.02);
+    g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.35);
+    o.start(); o.stop(ac.currentTime+0.36);
+  }catch(e){}
+}
+function showBuyToast(html, ms){
+  const t=$('buyToast'); t.innerHTML=html; t.style.display='block';
+  clearTimeout(S._toastT); S._toastT=setTimeout(()=>{ t.style.display='none'; }, ms||8000);
+}
+function gradeTag(b){ const c={2:'#c77dff',3:'#ff4d4f'}[b.rank]; return `<b style="color:${c}">${b.grade}</b>`; }
+function intradayAlertCheck(){
+  const buys=S.intraSignals||[]; const code=S.stock.code;
+  const seen=S.alertSeen[code]=S.alertSeen[code]||new Set();
+  const actionable=buys.filter(b=>b.rank>=2);              // 买点/强买才提示
+  // 首次载入该股：把已有的记为已见，不打扰
+  if(!S.alertSeen['_init_'+code]){ S.alertSeen['_init_'+code]=true;
+    actionable.forEach(b=>seen.add(b.idx));
+    if(actionable.length) showBuyToast(`📊 <b>${S.stock.name}</b> 当日已有 ${actionable.length} 个买点（强买${actionable.filter(b=>b.rank===3).length}/买点${actionable.filter(b=>b.rank===2).length}）· 悬浮查看理由`, 5000);
+    return;
+  }
+  // 盘中新出现的买点 → 提示
+  const fresh=actionable.filter(b=>!seen.has(b.idx));
+  if(!fresh.length) return;
+  fresh.forEach(b=>seen.add(b.idx));
+  const top=fresh.sort((a,b)=>b.rank-a.rank)[0];
+  const msg=`🔔 ${S.stock.name}(${code}) 出现${top.grade}：${top.t} ${top.type} @ ${fmt2(top.price)}（${top.strength}家族共振）`;
+  log('sig','【买点提示】'+msg);
+  if(S.alertOn){
+    showBuyToast(`🔔 <b style="color:var(--up)">盘中买点提示</b><br><b>${S.stock.name}</b> ${gradeTag(top)}·${top.type} · ${top.t} @ <b>${fmt2(top.price)}</b><br><span style="color:var(--ink2)">${top.reasons.join(' + ')}</span>`, 12000);
+    beep();
+    try{ if(window.Notification&&Notification.permission==='granted')
+      new Notification('盘中买点：'+S.stock.name, {body:`${top.grade}·${top.type} ${top.t} @${fmt2(top.price)}`}); }catch(e){}
+  }
+}
+$('alertBtn').addEventListener('click',()=>{
+  S.alertOn=!S.alertOn;
+  $('alertBtn').textContent='🔔 买点提示：'+(S.alertOn?'开':'关');
+  $('alertBtn').style.color=S.alertOn?'var(--good)':'var(--muted)';
+  if(S.alertOn){ beep(); // 用户手势→解锁音频
+    if(window.Notification&&Notification.permission==='default') Notification.requestPermission();
+    log('info','买点提示已开启（弹窗+提示音+桌面通知）');
+  }else log('info','买点提示已关闭');
+});
+$('alertBtn').style.color='var(--good)';
+// 上证分时（市场门槛用，全市场共用，一次加载）
+async function ensureIdxTrend(){
+  try{
+    const ix=PRESETS[0];                                  // 上证指数
+    let tr=null;
+    if(S.source==='live'){ try{tr=await fetchTrends(ix);}catch(e){ try{tr=await fetchTrendsTX(ix);}catch(e2){} } }
+    if(!tr){ const k=mockKlines(ix,2); tr=retargetTrends(mockTrends(ix,k[k.length-1].c), k[k.length-1].c); }
+    if(tr){ S.idxTrend=tr; if(typeof drawTrends==='function') drawTrends(); }
+  }catch(e){} finally{ S._idxLoading=false; }
 }
 function drawTrends(){
   if(!S.trends) return;
@@ -1276,6 +1434,41 @@ function drawTrends(){
   ctx.fillStyle=cssVar('--muted'); ctx.textAlign='left'; ctx.fillText('MACD(12,26,9)', L.pl+4, L.macT+6);
   ctx.fillStyle=cssVar('--s1'); ctx.fillText('DIF', L.pl+86, L.macT+6);
   ctx.fillStyle=cssVar('--s2'); ctx.fillText('DEA', L.pl+108, L.macT+6);
+  // ---- 主力资金·暗盘吸筹（超大单+大单：分钟净额红绿柱 + 累计线 + 暗盘吸筹线 + 明/暗盘判定）----
+  const dfH=L.dfB-L.dfT, midY=(L.dfT+L.dfB)/2, af=alignFlow(pts), mInc=af.mInc, mCum=af.mCum;
+  ctx.strokeStyle=cssVar('--axis'); ctx.setLineDash([3,3]);
+  ctx.beginPath(); ctx.moveTo(L.pl,midY); ctx.lineTo(w-L.pr,midY); ctx.stroke(); ctx.setLineDash([]);
+  ctx.textAlign='left'; ctx.font='9.5px system-ui';
+  if(af.has){
+    // 分钟净额红绿柱（真实：主力=超大单+大单）
+    const maxInc=Math.max(1,...mInc.map(x=>Math.abs(x)));
+    for(let i=0;i<pts.length;i++){ const hgt=Math.abs(mInc[i])/maxInc*(dfH/2)*0.9;
+      ctx.fillStyle= mInc[i]>=0?cssVar('--up'):cssVar('--down');
+      ctx.fillRect(xOf(i)-0.7, mInc[i]>=0?midY-hgt:midY, 1.6, Math.max(0.6,hgt)); }
+    // 暗盘吸筹累计：只统计“价没涨(≤+0.05%)时的流入 / 价没跌时的流出” = 隐蔽建仓/出货的部分
+    const stealth=new Array(pts.length).fill(0); let sc=0;
+    for(let i=0;i<pts.length;i++){ const pc= i? (pts[i].p-pts[i-1].p)/pts[i-1].p : 0;
+      if(mInc[i]>0 && pc<=0.0005) sc+=mInc[i]; else if(mInc[i]<0 && pc>=-0.0005) sc+=mInc[i];
+      stealth[i]=sc; }
+    const cmax=Math.max(1,...mCum.map(x=>Math.abs(x)),...stealth.map(x=>Math.abs(x)));
+    const cyOf=v=> midY - v/cmax*(dfH/2)*0.9;
+    ctx.strokeStyle='#ffbf3f'; ctx.lineWidth=1.3; ctx.beginPath();       // 累计主力净流入(明+暗)
+    pts.forEach((p,i)=>{ const x=xOf(i),y=cyOf(mCum[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
+    ctx.strokeStyle='#3fd6c8'; ctx.lineWidth=1.2; ctx.setLineDash([4,2]); ctx.beginPath(); // 暗盘吸筹线
+    pts.forEach((p,i)=>{ const x=xOf(i),y=cyOf(stealth[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke(); ctx.setLineDash([]);
+    // 明盘/暗盘判定（近30分钟资金与价格的关系）
+    const nn=pts.length-1, w0=Math.max(0,nn-30);
+    const capUp=mCum[nn]-mCum[w0], pxUp=(pts[nn].p-pts[w0].p)/pts[w0].p;
+    let tag,tagc;
+    if(capUp>0&&pxUp<=0.002){ tag='▸资金进·价没涨=隐蔽建仓'; tagc=cssVar('--up'); }
+    else if(capUp>0&&pxUp>0.002){ tag='▸量价资金齐涨=明盘拉升'; tagc=cssVar('--up'); }
+    else if(capUp<0&&pxUp>=-0.002){ tag='▸价撑住·资金悄撤=暗盘出货'; tagc=cssVar('--down'); }
+    else { tag='▸资金流出·价走弱'; tagc=cssVar('--down'); }
+    ctx.fillStyle=cssVar('--muted'); ctx.fillText('主力资金', L.pl+4, L.dfT+6);
+    ctx.fillStyle='#ffbf3f'; ctx.fillText('净流入'+(mCum[nn]>=0?'+':'')+fmtCN(mCum[nn]), L.pl+48, L.dfT+6);
+    ctx.fillStyle='#3fd6c8'; ctx.fillText('暗盘吸筹'+(stealth[nn]>=0?'+':'')+fmtCN(stealth[nn]), L.pl+124, L.dfT+6);
+    ctx.fillStyle=tagc; ctx.fillText(tag, L.pl+210, L.dfT+6);
+  } else { ctx.fillStyle=cssVar('--muted'); ctx.fillText('主力资金：指数或接口无该数据', L.pl+4, L.dfT+6); }
   // ---- 均价线 & 价格线 ----
   ctx.strokeStyle=cssVar('--s2'); ctx.lineWidth=1.4; ctx.beginPath();
   pts.forEach((p,i)=>{ const x=xOf(i),y=yOf(p.avg); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
@@ -1293,8 +1486,38 @@ function drawTrends(){
   const lx=xOf(pts.length-1), ly=yOf(pts[pts.length-1].p);
   ctx.beginPath(); ctx.arc(lx,ly,3,0,7); ctx.fillStyle=lineC; ctx.fill();
   ctx.strokeStyle=cssVar('--surface'); ctx.lineWidth=2; ctx.stroke();
-  L.pts=pts; L.xOf=xOf; L.yOf=yOf; L.mac=mac;
+  // ---- 盘中买点标记 v3（分级：关注/买点/强买）----
+  const buys=computeIntradayBuys(pts, pre); S.intraSignals=buys;
+  const gradeColor={1:'#8a8a99',2:'#c77dff',3:'#ff4d4f'};       // 关注灰/买点紫/强买红
+  ctx.textAlign='center';
+  for(const b of buys){
+    const x=xOf(b.idx), y=yOf(b.price), c=gradeColor[b.rank];
+    const sz= b.rank===3?5.5: b.rank===2?4.5:3.5;
+    ctx.strokeStyle=cssVar('--surface'); ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(x,y+6); ctx.lineTo(x-sz,y+6+sz*1.6); ctx.lineTo(x+sz,y+6+sz*1.6); ctx.closePath();
+    if(b.rank===1){ ctx.strokeStyle=c; ctx.lineWidth=1.3; ctx.stroke(); }   // 关注=空心
+    else { ctx.fillStyle=c; ctx.fill(); ctx.stroke(); }
+    if(b.rank>=2){ ctx.fillStyle=c; ctx.font='bold 9.5px system-ui'; ctx.fillText(b.grade, x, y+6+sz*1.6+10); }
+  }
+  // 图例 + 当日超额验证
+  ctx.textAlign='left'; ctx.font='9.5px system-ui';
+  const nS=buys.filter(b=>b.rank===3).length, nB=buys.filter(b=>b.rank===2).length, nW=buys.filter(b=>b.rank===1).length;
+  const v=S.intraValid; let vtxt='';
+  if(v&&v.base!=null){
+    const ex=v.verified? (v.win/v.verified - v.base) : null;
+    vtxt= v.verified? ` · 今日已验证${v.verified} 命中${(v.win/v.verified*100).toFixed(0)}%/基准${(v.base*100).toFixed(0)}%${ex!=null?`(超额${ex>=0?'+':''}${(ex*100).toFixed(0)}pp)`:''}`
+      : ` · 基准${v.H}分钟胜率${(v.base*100).toFixed(0)}%，待验证`;
+  }
+  ctx.fillStyle=cssVar('--ink2');
+  ctx.fillText(`盘中买点：`, L.pl+4, L.pt+18);
+  ctx.fillStyle='#ff4d4f'; ctx.fillText(`强买${nS}`, L.pl+52, L.pt+18);
+  ctx.fillStyle='#c77dff'; ctx.fillText(`买点${nB}`, L.pl+82, L.pt+18);
+  ctx.fillStyle='#8a8a99'; ctx.fillText(`关注${nW}`, L.pl+112, L.pt+18);
+  ctx.fillStyle=cssVar('--muted'); ctx.fillText(`（暗盘资金领先驱动，无资金流入不给点）${vtxt}`, L.pl+142, L.pt+18);
+  L.pts=pts; L.xOf=xOf; L.yOf=yOf; L.mac=mac; L.buys=buys;
   trendsL=L;
+  intradayAlertCheck();                                         // 买点提示检查
+  if(!S.stock.index && !S.idxTrend && !S._idxLoading){ S._idxLoading=true; ensureIdxTrend(); } // 懒加载大盘门槛
 }
 let trendsL=null;
 $('trendsCv').addEventListener('mousemove',e=>{
@@ -1306,10 +1529,15 @@ $('trendsCv').addEventListener('mousemove',e=>{
   const pre=S.trends.preClose, tip=$('trendsTip');
   const dif=L.mac?L.mac.dif[i]:null, dea=L.mac?L.mac.dea[i]:null, hi=L.mac?L.mac.hist[i]:null;
   tip.style.display='block';
+  const b= L.buys&&L.buys.find(b=>Math.abs(b.idx-i)<=1);
+  const tc={1:'#8a8a99',2:'#c77dff',3:'#ff4d4f'}[b&&b.rank]||'#c77dff';
+  const outcome= b&&b.fwd!=null? `<br><span style="color:${b.win?'var(--up)':'var(--down)'}">验证：30分钟后 ${b.fwd>0?'+':''}${(b.fwd*100).toFixed(2)}%（${b.win?'命中✓':'失败✗'}）</span>`:(b?'<br><span style="color:var(--muted)">尚不足30分钟，待验证</span>':'');
+  const buyHtml= b? `<br><b style="color:${tc}">▲ ${b.grade}·${b.type}（${b.strength}家族共振）</b><br><span style="color:var(--ink2)">${b.reasons.join(' + ')}</span>${outcome}`:'';
+  tip.style.display='block';
   tip.innerHTML=`<b>${p.t}</b><br>价格 <b style="color:${upDownColor(p.p-pre)}">${fmt2(p.p)}</b> (${fmtPct((p.p-pre)/pre,true)})<br>均价 ${fmt2(p.avg)}<br>现量 ${fmtVol(p.v)} · 额 ${fmtCN(p.amt)}<br>`+
-    `<span style="color:var(--s1)">DIF ${dif==null?'—':dif.toFixed(3)}</span> <span style="color:var(--s2)">DEA ${dea==null?'—':dea.toFixed(3)}</span><br>MACD柱 <span style="color:${upDownColor(hi||0)}">${hi==null?'—':hi.toFixed(3)}</span>`;
+    `<span style="color:var(--s1)">DIF ${dif==null?'—':dif.toFixed(3)}</span> <span style="color:var(--s2)">DEA ${dea==null?'—':dea.toFixed(3)}</span><br>MACD柱 <span style="color:${upDownColor(hi||0)}">${hi==null?'—':hi.toFixed(3)}</span>`+buyHtml;
   const tx=clamp(x+14, 0, r.width-170);
-  tip.style.left=tx+'px'; tip.style.top=clamp(e.clientY-r.top+12,0,r.height-150)+'px';
+  tip.style.left=tx+'px'; tip.style.top=clamp(e.clientY-r.top+12,0,r.height-170)+'px';
 });
 $('trendsCv').addEventListener('mouseleave',()=>$('trendsTip').style.display='none');
 
@@ -1521,26 +1749,64 @@ const STRATS={
           const sell=X.sig.波段卖出[i]||X.sig.卖出[i]||X.sig.铡刀[i];
           return buy?1: sell?-1: 0; }; },
         pstr:()=>`分水岭N17/M18`},
+  dyn: {name:'动态趋势(自适应离场)', noSLTP:true, mk:(k,p)=>{
+        const c=k.map(x=>x.c),o=k.map(x=>x.o),h=k.map(x=>x.h),l=k.map(x=>x.l),v=k.map(x=>x.v);
+        const ma5=SMA(c,5),ma10=SMA(c,10),ma20=SMA(c,20),vma5=SMA(v,5),mac=MACD(c);
+        const fn=(i,ctx)=>{ if(i<21||ma20[i]==null) return 0;
+          const body=Math.abs(c[i]-o[i])||1e-6, upSh=h[i]-Math.max(c[i],o[i]), dnSh=Math.min(c[i],o[i])-l[i];
+          const chg=(c[i]-c[i-1])/c[i-1];
+          const S=(w)=>{ fn.why=w; return -1; }, B=(w)=>{ fn.why=w; return 1; };
+          // ===== 卖出/离场（趋势坏、见顶、滞涨，立刻走）=====
+          if(ctx&&ctx.holding){
+            if(c[i]<ma10[i]) return S('跌破10日线·趋势转坏');                          // 趋势止损
+            if(c[i]<ma5[i]&&c[i-1]>=ma5[i-1]&&c[i]<o[i]) return S('阴线跌破5日线');       // 短线破位
+            if(v[i]>vma5[i]*1.8&&(chg<0.005||c[i]<o[i])) return S('放量滞涨·量增价不涨');  // 滞涨止盈
+            if(upSh>body*2&&upSh/c[i]>0.02&&c[i]>=ma5[i]*1.02) return S('高位长上影·冲高回落'); // 见顶止盈
+            if(mac.dif[i-1]>=mac.dea[i-1]&&mac.dif[i]<mac.dea[i]&&mac.dif[i]>0) return S('高位MACD死叉'); // 动能转弱
+            return 0;                                                                    // 趋势未坏→右侧持有
+          }
+          // ===== 买入（右侧顺势 / 长下影反转）=====
+          const up = ma5[i]>ma10[i]&&ma10[i]>=ma20[i]&&c[i]>=ma20[i];
+          if(dnSh>body*2&&dnSh/c[i]>0.02&&c[i]>=o[i]&&c[i]>ma20[i]*0.96&&v[i]>vma5[i]) return B('长下影探底回升'); // 反转入场
+          if(c[i]>ma5[i]&&c[i-1]<=ma5[i-1]&&up&&c[i]>o[i]) return B('站上5日线·均线多头(右侧)');                    // 右侧顺势
+          let hh=-1e9; for(let j=i-20;j<i;j++) hh=Math.max(hh,c[j]);
+          if(c[i]>hh&&v[i]>vma5[i]*1.3&&up) return B('放量突破20日新高(右侧)');                                     // 右侧突破
+          return 0; };
+        return fn; },
+        pstr:()=>'跌破5/10线·滞涨·长上影→自适应止盈止损；长下影/突破→入场'},
 };
 const stratName=id=>STRATS[id].name;
 
 function currentParams(){
   return { fast:clamp(+$('pFast').value||5,2,90), slow:clamp(+$('pSlow').value||20,3,150),
     sl:(+$('pSL').value||0)/100, tp:(+$('pTP').value||0)/100,
+    exitMode:$('pExit')?$('pExit').value:'fixed', atrN:clamp(+($('pAtrN')?$('pAtrN').value:3)||3,1,8),
     rsiLo:30, rsiHi:70, days:+$('pDays').value };
 }
 
-/* ---------- 回测引擎：T+1 / 涨跌停 / 佣金印花税 ---------- */
+// 平均真实波幅 ATR（Wilder平滑）
+function ATR(k,n){ const tr=[], out=new Array(k.length).fill(null);
+  for(let i=0;i<k.length;i++){ const pc=i?k[i-1].c:k[i].c;
+    tr.push(Math.max(k[i].h-k[i].l, Math.abs(k[i].h-pc), Math.abs(k[i].l-pc))); }
+  let a=0; for(let i=0;i<k.length;i++){ if(i<n){ a+=tr[i]; if(i===n-1) out[i]=a/n; }
+    else out[i]=(out[i-1]*(n-1)+tr[i])/n; } return out; }
+
+/* ---------- 回测引擎：T+1 / 涨跌停 / 佣金印花税 / 动态止损 ---------- */
 function runBacktest(kAll, stratId, p){
   const warm=60, days=p.days;
   const k=kAll.slice(-(days+warm));
   const off=warm; // 从 warm 之后开始交易，指标已预热
   const sig=STRATS[stratId].mk(k,p);
+  const noSLTP=!!STRATS[stratId].noSLTP;                     // 动态趋势策略：自带信号离场
+  const exitMode= noSLTP? 'signal' : (p.exitMode||'fixed'); // fixed固定 / atr吊灯 / atr_be保本+吊灯 / ma跟踪均线
+  const N=p.atrN||3;                                         // ATR倍数
+  const atr=ATR(k,14); const cA=k.map(x=>x.c); const ma10A=SMA(cA,10);
   const COMM=0.00025, STAMP=0.0005, INIT=1e6;
   const limit=limitPctOf(S.stock);
   let cash=INIT, sh=0, entryP=0, entryI=-1;
-  const trades=[]; const equity=new Array(k.length).fill(INIT);
-  let pending=0;
+  let hh=0, stopLine=0, beHit=false;                         // 吊灯跟踪状态
+  const trades=[]; const equity=new Array(k.length).fill(INIT); const stopArr=new Array(k.length).fill(null);
+  let pending=0, pendingWhy='';
   for(let i=0;i<k.length;i++){
     const bar=k[i], prev=k[i-1];
     if(i>off&&pending!==0){
@@ -1551,26 +1817,44 @@ function runBacktest(kAll, stratId, p){
           const px=bar.o;
           sh=Math.floor(cash/(px*(1+COMM))/100)*100; // 整手
           if(sh>0){ cash-=sh*px*(1+COMM); entryP=px; entryI=i;
+            hh=bar.h; beHit=false;
+            stopLine= exitMode==='ma'? (ma10A[i]||px*0.95) : (hh-N*(atr[i]||px*0.03));
             trades.push({buyD:bar.d,buyP:px,buyI:i+ (kAll.length-k.length)}); }
         }
       }else if(pending===-1&&sh>0&&i>entryI){ // T+1
         const gap=(bar.o-prev.c)/prev.c;
         if(limit&&gap<=-limit*0.985){ /* 一字跌停卖不出 */ }
-        else sell(bar.o,bar,i);
+        else sell(bar.o,bar,i,pendingWhy);
       }
       pending=0;
     }
-    // 止损止盈（持仓且过了 T+1）
+    // —— 离场（持仓且过 T+1）——
     if(sh>0&&i>entryI){
-      if(p.sl>0&&bar.l<=entryP*(1-p.sl)){
-        let px=Math.min(bar.o,entryP*(1-p.sl));
-        if(!(limit&&(bar.o-prev.c)/prev.c<=-limit*0.985)) sell(px,bar,i,'止损');
-      }else if(p.tp>0&&bar.h>=entryP*(1+p.tp)){
-        const px=Math.max(bar.o,entryP*(1+p.tp));
-        sell(px,bar,i,'止盈');
+      if(exitMode==='fixed'){
+        if(p.sl>0&&bar.l<=entryP*(1-p.sl)){ let px=Math.min(bar.o,entryP*(1-p.sl));
+          if(!(limit&&(bar.o-prev.c)/prev.c<=-limit*0.985)) sell(px,bar,i,'固定止损'); }
+        else if(p.tp>0&&bar.h>=entryP*(1+p.tp)) sell(Math.max(bar.o,entryP*(1+p.tp)),bar,i,'固定止盈');
+      } else if(exitMode==='atr'||exitMode==='atr_be'){       // ATR吊灯（可选保本）
+        hh=Math.max(hh,bar.h);
+        if(exitMode==='atr_be'&&!beHit&&bar.h>=entryP+(atr[i]||0)) beHit=true;
+        let sl=Math.max(stopLine, hh-N*(atr[i]||entryP*0.03)); // 只上移
+        if(exitMode==='atr_be'&&beHit) sl=Math.max(sl, entryP*(1+COMM));
+        stopLine=sl;
+        if(bar.l<=stopLine){ const px= bar.o<=stopLine? bar.o : stopLine;
+          if(!(limit&&(bar.o-prev.c)/prev.c<=-limit*0.985)) sell(px,bar,i, (bar.o>entryP*1.02||hh>entryP*1.05)?'吊灯止盈(利润回吐)':'ATR吊灯止损'); }
       }
     }
-    if(sh>0||i>=off){ const s=sig(i); if(s!==0) pending=s; }
+    // 信号：固定/信号模式用策略买卖；动态止损模式只取买入、卖出交给止损
+    if(sh>0||i>=off){
+      const s=sig(i,{holding:sh>0});
+      if(exitMode==='fixed'||exitMode==='signal'){
+        if(s!==0){ pending=s; pendingWhy=(s===-1?(sig.why||'信号'):(sig.why||'')); }
+      }else{
+        if(s===1&&sh===0){ pending=1; pendingWhy=''; }
+        if(exitMode==='ma'&&sh>0&&i>entryI&&ma10A[i]!=null&&bar.c<ma10A[i]){ pending=-1; pendingWhy='收盘跌破MA10跟踪线'; }
+      }
+    }
+    if(sh>0) stopArr[i]= exitMode==='ma'? ma10A[i] : exitMode==='fixed'? (p.sl>0?entryP*(1-p.sl):null) : stopLine;
     equity[i]=cash+sh*bar.c;
   }
   function sell(px,bar,i,why){
@@ -1596,7 +1880,7 @@ function runBacktest(kAll, stratId, p){
   const losses=done.filter(t=>t.ret<=0);
   const avgW=wins.length? wins.reduce((a,t)=>a+t.ret,0)/wins.length : 0;
   const avgL=losses.length? Math.abs(losses.reduce((a,t)=>a+t.ret,0)/losses.length) : 0;
-  return { stratId, params:{...p}, trades, equity, k, off,
+  return { stratId, params:{...p}, trades, equity, k, off, stopLine:stopArr, exitMode,
     metrics:{ total:totalRet, annual, maxDD, sharpe,
       winRate: done.length? wins.length/done.length : 0,
       odds: avgL>0? avgW/avgL : (avgW>0?3:0),
@@ -1861,6 +2145,14 @@ function drawKline(){
       ctx.fillText((v/1e6).toFixed(2), w-L.pr+8, eyOf(v)); }
     ctx.save(); ctx.translate(w-10,(L.pt+L.priceB)/2); ctx.rotate(Math.PI/2);
     ctx.textAlign='center'; ctx.fillText('净值(百万)',0,0); ctx.restore();
+    // 动态止损线（吊灯/跟踪均线，画在价格轴上，随价格上移）
+    if(res.stopLine && res.exitMode!=='fixed' && res.exitMode!=='signal'){
+      ctx.strokeStyle='#ffbf3f'; ctx.lineWidth=1.4; ctx.setLineDash([]);
+      for(let i=1;i<idx;i++){ const j=i-eqOff, jp=j-1;
+        if(j<0||jp<0||j>=res.stopLine.length) continue;
+        const a=res.stopLine[jp], b=res.stopLine[j]; if(a==null||b==null) continue;
+        ctx.beginPath(); ctx.moveTo(xOf(i-1),yOf(a)); ctx.lineTo(xOf(i),yOf(b)); ctx.stroke(); }
+    }
     // 买卖标注
     ctx.font='bold 10px system-ui'; ctx.textAlign='center';
     for(const t of res.trades){
@@ -2966,7 +3258,24 @@ $('runBtn').addEventListener('click',()=>{ runCompare(); refreshSignalPanel(); b
 $('cmpBtn').addEventListener('click',()=>{ runCompare(); log('info','多策略对比已更新（基于当前参数）'); });
 $('rptBtn').addEventListener('click',()=>openReport());
 $('aiBtn').addEventListener('click',aiGenerate);
-$('pStrat').addEventListener('change',()=>{ S.active=$('pStrat').value; });
+function syncExitUI(){
+  const dyn=$('pStrat').value==='dyn', mode=$('pExit').value;
+  const show=(id,v)=>{ const e=$(id); if(e) e.style.display=v?'':'none'; };
+  $('pExit').parentElement.style.display= dyn?'none':'';       // 动态趋势策略自带离场
+  show('fSL', !dyn && mode==='fixed');
+  show('fTP', !dyn && mode==='fixed');
+  show('fAtrN', !dyn && (mode==='atr'||mode==='atr_be'));
+  $('seStatus').textContent= dyn? '动态趋势：自带信号离场（跌破5/10线·滞涨·长上影），无需设止损' :
+    mode==='fixed'? '固定比例：到达止损%/止盈%离场' :
+    mode==='atr'? 'ATR吊灯：止损线=持仓最高价−N×ATR，随价上移只升不降，自动锁利（画在K线上）' :
+    mode==='atr_be'? '保本+吊灯：盈利够1×ATR先移到成本价，之后吊灯跟踪' :
+    '跟踪均线：持仓守MA10，收盘跌破即离场';
+}
+$('pStrat').addEventListener('change',()=>{ S.active=$('pStrat').value; syncExitUI();
+  if(S.klines&&S.klines.length){ runCompare(); refreshSignalPanel(); resetPlayback(true); } });
+$('pExit').addEventListener('change',()=>{ syncExitUI();
+  if(S.klines&&S.klines.length){ runCompare(); refreshSignalPanel(); buildTicker(); resetPlayback(true); } });
+$('pAtrN').addEventListener('change',()=>{ if(S.klines&&S.klines.length){ runCompare(); resetPlayback(true); } });
 $('pDays').addEventListener('change',()=>{ S.results={}; loadAll(); });
 window.addEventListener('resize',()=>{ drawTrends(); drawKline(); });
 
@@ -2974,6 +3283,7 @@ window.addEventListener('resize',()=>{ drawTrends(); drawKline(); });
 setInterval(async ()=>{
   if(S.source!=='live'||!updateClock()) return;
   try{ S.trends=await fetchTrends(S.stock);
+    S.idxTrend=null;                                      // 刷新大盘门槛数据
     refreshHeader(); drawTrends(); refreshSignalPanel(); buildTicker();
     loadFlows();
   }catch(e){}
@@ -2981,6 +3291,7 @@ setInterval(async ()=>{
 
 updateClock();
 renderIndCards();
+syncExitUI();
 log('info','A股量化分析仪表盘启动 · 数据源：东方财富公开行情接口（不可达时自动切换模拟数据）');
 loadAll();
 
