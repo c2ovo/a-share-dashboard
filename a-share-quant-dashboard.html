@@ -1044,23 +1044,26 @@ async function fetchAllMarket(onProg){ // 全市场快照（沪深主板/创业/
     const pages=Math.min(80,Math.ceil(total/effPz)||1);         // 全市场约5400只，100/页→需~54页，上限放到80
     let all=first;
     if(onProg) onProg(all.length,total);
-    async function fetchPage(p){                                // 单页最多试3次，成功累加、返回true
-      for(let att=0; att<3; att++){
+    async function fetchPage(p){                                // 单页带退避重试；退避给限流留恢复时间
+      for(let att=0; att<4; att++){
         try{ const j=await apiGet(urlOf(fs,p)); const d=j&&j.data&&j.data.diff;
           const rows=d? parse(Array.isArray(d)?d:Object.values(d)) : null;
           if(rows&&rows.length){ all=all.concat(rows); if(onProg) onProg(all.length,total); return true; }
         }catch(e){}
-        await sleep(250*(att+1));
+        await sleep(600+att*1400+Math.floor(Math.random()*300));   // 退避+抖动
       }
       return false;
     }
+    // 关键：东财对高频/高并发有反爬限流——猛刷+重试会越刷越被封，导致每次只剩两三千只。
+    // 改成“温柔抓取”：低并发(3) + 每次请求之间留间隔，被限流的概率大幅下降。
     const rest=[]; for(let p=2;p<=pages;p++) rest.push(p);
     let failed=[];
-    async function w(){ while(rest.length){ const p=rest.shift(); const ok=await fetchPage(p); if(!ok) failed.push(p); } }
-    await Promise.all(Array.from({length:5},w));                // 并发5路（太高易被限流丢页）
-    // 兜底：把仍然失败的页再串行重试一轮
-    if(failed.length){ const again=failed; failed=[];
-      for(const p of again){ const ok=await fetchPage(p); if(!ok) failed.push(p); } }
+    async function w(){ while(rest.length){ const p=rest.shift(); const ok=await fetchPage(p); if(!ok) failed.push(p);
+      await sleep(90+Math.floor(Math.random()*90)); } }             // 请求间隔，别把接口打到限流
+    await Promise.all(Array.from({length:3},w));                    // 并发降到3
+    // 兜底：仍失败的页，整体停一会儿等限流窗口过去，再串行慢慢补
+    if(failed.length){ const again=failed; failed=[]; await sleep(2000);
+      for(const p of again){ const ok=await fetchPage(p); if(!ok) failed.push(p); await sleep(200); } }
     return {list:all, total, err:null, missPages:failed.length};
   }
   // ① 主市场（已验证可用的过滤）：沪深主板 + 创业板 + 科创板（含ST）
@@ -2751,11 +2754,12 @@ async function scanAll(force){
       const cand=list.filter(s=>s.main>0 && s.pct>-4 && s.pct<9.8)
         .sort((a,b)=>(b.mainPct+(b.vr||0)*2)-(a.mainPct+(a.vr||0)*2)).slice(0,N);
       setP(`快照完成 ${list.length} 只，拉取 ${cand.length} 只深度日K…`,38);
-      S.poolA={}; let done=0,failed=0; const queue=cand.slice(); const CONC=8;
+      S.poolA={}; let done=0,failed=0; const queue=cand.slice(); const CONC=4;   // 并发降到4，避免深度日K阶段再触发限流
       async function worker(){ while(queue.length){ const p=queue.shift(); let k=null;
         try{ k=await klineFallback(p,95); }catch(e){}
         if(k) S.poolA[p.code]=calcAll(k); else failed++; done++;
-        if(done%10===0||done===cand.length) setP(`深度指标日K ${done}/${cand.length}…`, 38+done/Math.max(cand.length,1)*46); } }
+        if(done%10===0||done===cand.length) setP(`深度指标日K ${done}/${cand.length}…`, 38+done/Math.max(cand.length,1)*46);
+        await new Promise(r=>setTimeout(r,40)); } }                                // 请求间留点间隔
       await Promise.all(Array.from({length:CONC},worker));
       if(failed) log('warn',`${failed} 只候选日K获取失败已跳过`);
       patchPoolToday(snaps); await ensureIdxK();
