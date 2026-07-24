@@ -321,6 +321,11 @@ canvas{display:block;width:100%}
       <button id="loadBtn" class="btn-primary">加载</button>
     </div>
     <span id="srcBadge" class="badge">连接中…</span>
+    <select id="srcMode" class="badge" title="行情数据源：自动双源=同时用东财+腾讯互补，一个源缺的数据用另一个补齐" style="cursor:pointer;border:1px solid var(--border);background:var(--surface2);color:var(--ink)">
+      <option value="auto" selected>源·自动双源补齐</option>
+      <option value="em">源·仅东财</option>
+      <option value="tx">源·仅腾讯</option>
+    </select>
     <span id="mktBadge" class="badge">—</span>
     <span id="dataTs" class="badge">行情时间 —</span>
     <button id="aucBtn" class="hd-btn">◷ 竞价窗口</button>
@@ -890,6 +895,42 @@ async function fetchTrendsTX(stk){ // 腾讯分时
   points.forEach(pt=>{ cv+=pt.v; cpv+=pt.v*pt.p; pt.avg= cv? +(cpv/cv).toFixed(3):pt.p; });
   return {preClose: pre||points[0].p, points};
 }
+/* ---------------- 双源自动补齐：东财 + 腾讯 互补取数 ---------------- */
+function curSrcMode(){ const el=$('srcMode'); return el? el.value : 'auto'; }
+function mergeKlines(a,b){ // 以日期为键合并：东财值优先，缺失的交易日用腾讯补齐
+  if(!a||!a.length) return b||[];
+  if(!b||!b.length) return a||[];
+  const map={};
+  for(const k of b) if(k&&k.d) map[k.d]=k;   // 先铺腾讯
+  for(const k of a) if(k&&k.d) map[k.d]=k;   // 东财覆盖同一天
+  return Object.values(map).sort((x,y)=> x.d<y.d?-1:x.d>y.d?1:0);
+}
+async function getKlines(stk,lmt){ // 按数据源模式取日K（auto=双源合并补齐）
+  const mode=curSrcMode();
+  if(mode==='em') return {k:await fetchKlines(stk,lmt), src:'东财'};
+  if(mode==='tx') return {k:await fetchKlinesTX(stk,lmt), src:'腾讯'};
+  const [em,tx]=await Promise.allSettled([fetchKlines(stk,lmt), fetchKlinesTX(stk,lmt)]);
+  const A=em.status==='fulfilled'?em.value:null, B=tx.status==='fulfilled'?tx.value:null;
+  if(!A&&!B) throw new Error('双源日K均失败');
+  if(A&&B){ const m=mergeKlines(A,B); return {k:m, src: m.length>Math.max(A.length,B.length)?'东财+腾讯':'东财'}; }
+  return A? {k:A,src:'东财'} : {k:B,src:'腾讯'};
+}
+async function getTrends(stk){ // 按数据源模式取分时（auto=取更完整的一源）
+  const mode=curSrcMode();
+  if(mode==='em') return {t:await fetchTrends(stk), src:'东财'};
+  if(mode==='tx') return {t:await fetchTrendsTX(stk), src:'腾讯'};
+  const [em,tx]=await Promise.allSettled([fetchTrends(stk), fetchTrendsTX(stk)]);
+  const A=em.status==='fulfilled'?em.value:null, B=tx.status==='fulfilled'?tx.value:null;
+  if(!A&&!B) throw new Error('双源分时均失败');
+  if(A&&B){ const best=(B.points.length>A.points.length+5)?B:A; return {t:best, src:best===B?'腾讯':'东财'}; }
+  return A? {t:A,src:'东财'} : {t:B,src:'腾讯'};
+}
+async function klineFallback(stk,lmt){ // 批量场景用：按模式取日K，auto=东财失败自动退腾讯（省请求，不双拉）
+  const m=curSrcMode();
+  if(m==='tx') return await fetchKlinesTX(stk,lmt);
+  if(m==='em') return await fetchKlines(stk,lmt);
+  try{ return await fetchKlines(stk,lmt); }catch(e){ return await fetchKlinesTX(stk,lmt); }
+}
 async function fetchPoolSnapshotTX(pool){ // 腾讯批量快照
   const syms=pool.map(txSym);
   await new Promise((res,rej)=>{
@@ -1173,18 +1214,20 @@ async function loadAll(){
   log('info',`开始加载 ${stk.name||stk.code}(${stk.code}) 数据…`);
   $('srcBadge').textContent='连接接口中…'; $('srcBadge').className='badge';
   const days=+$('pDays').value + 60; // 多取60根供指标预热
-  let src=null, ks=null, tr=null, e1=null, e2=null;
-  try{ [ks,tr]=await Promise.all([fetchKlines(stk,days), fetchTrends(stk)]); src='EM'; }
-  catch(err1){ e1=err1;
-    try{ [ks,tr]=await Promise.all([fetchKlinesTX(stk,days), fetchTrendsTX(stk)]); src='TX';
-      log('info','东方财富源不可达，已自动切换腾讯行情源'); }
-    catch(err2){ e2=err2; }
+  let src=null, ks=null, tr=null, e1=null, trSynth=false;
+  // 日K与分时各自独立取（互不拖累）：某一个失败不影响另一个；auto模式下每项都东财+腾讯互补
+  const [kr,trr]=await Promise.allSettled([getKlines(stk,days), getTrends(stk)]);
+  if(kr.status==='fulfilled'){ ks=kr.value.k; src=kr.value.src; } else e1=kr.reason;
+  if(trr.status==='fulfilled'){ tr=trr.value.t; if(src&&trr.value.src!==src) src=src+'/'+trr.value.src; else if(!src) src=trr.value.src; }
+  if(ks&&!tr){ // 有日K但分时缺 → 用日K末根合成分时占位，保证图能画、不丢日K
+    const pre= ks.length>1? ks[ks.length-2].c : ks[ks.length-1].c;
+    tr= retargetTrends(mockTrends(stk,pre), ks[ks.length-1].c); trSynth=true;
   }
-  if(src){
+  if(ks){
     S.klines=ks; S.trends=tr; S.source='live'; S.liveSrc=src;
     ensureTodayBar();
     $('netBanner').classList.remove('show');
-    log('ok',`实时数据加载成功（${src==='EM'?'东方财富':'腾讯'}源）：日K ${S.klines.length} 根，分时 ${tr.points.length} 点`);
+    log('ok',`实时数据加载成功（${src}源）：日K ${S.klines.length} 根，分时 ${tr.points.length} 点${trSynth?'（分时暂缺·已用日K合成占位）':''}`);
   }else if(S.demo){
     S.source='mock';
     S.klines=mockKlines(stk,days);
@@ -1193,13 +1236,13 @@ async function loadAll(){
     log('warn',`演示模式：现价采用${SNAP_DATE}内嵌真实收盘快照，历史K线为合成数据（已标注）`);
   }else{
     S.source='offline';
-    log('err',`东财(${e1&&e1.message})与腾讯(${e2&&e2.message})双源均不可达 — 按设置不显示模拟数据`);
+    log('err',`双源均不可达（${e1&&e1.message||'无数据'}）— 按设置不显示模拟数据`);
     $('netBanner').classList.add('show');
     renderOffline(stk);
     return;
   }
   $('srcBadge').textContent= S.source==='live'
-    ? (S.liveSrc==='TX'?'● 实时 · 腾讯源':'● 实时 · 东财源')
+    ? '● 实时 · '+(S.liveSrc||'东财')+'源'
     : `◐ 演示模式（价格快照${SNAP_DATE.slice(5)}真实）`;
   $('srcBadge').className='badge '+(S.source==='live'?'live':'mock');
   refreshAllUI();
@@ -2690,7 +2733,7 @@ async function scanAll(force){
       setP(`快照完成 ${list.length} 只，拉取 ${cand.length} 只深度日K…`,38);
       S.poolA={}; let done=0,failed=0; const queue=cand.slice(); const CONC=8;
       async function worker(){ while(queue.length){ const p=queue.shift(); let k=null;
-        try{ k=await fetchKlines(p,95); }catch(e){ try{ k=await fetchKlinesTX(p,95); }catch(e2){} }
+        try{ k=await klineFallback(p,95); }catch(e){}
         if(k) S.poolA[p.code]=calcAll(k); else failed++; done++;
         if(done%10===0||done===cand.length) setP(`深度指标日K ${done}/${cand.length}…`, 38+done/Math.max(cand.length,1)*46); } }
       await Promise.all(Array.from({length:CONC},worker));
@@ -2714,7 +2757,7 @@ async function scanAll(force){
       if(!S.poolA||force||S._lastMode==='all'){
         S.poolA={}; let done=0, failed=0; const CONC=6; const queue=POOL.slice();
         async function worker(){ while(queue.length){ const p=queue.shift(); let k=null;
-          if(S.source==='live'){ try{ k=await fetchKlines(p,95); }catch(e){ try{ k=await fetchKlinesTX(p,95); }catch(e2){} } }
+          if(S.source==='live'){ try{ k=await klineFallback(p,95); }catch(e){} }
           if(!k){ if(S.demo) k=mockKlines(p,95); else { failed++; done++; continue; } }
           S.poolA[p.code]=calcAll(k); done++;
           if(done%6===0||done===POOL.length) setP(`拉取样本池日K ${done}/${POOL.length}…`, 5+done/POOL.length*70); } }
@@ -3231,8 +3274,7 @@ async function ensureIdxK(){ // 大盘（上证）日K，用于分水岭市场�
   if(S.idxK&&S.idxK.length) return;
   const idx=PRESETS[0]; let k=null;
   if(S.source==='live'){
-    try{ k=await fetchKlines(idx,95); }
-    catch(e){ try{ k=await fetchKlinesTX(idx,95); }catch(e2){} }
+    try{ k=await klineFallback(idx,95); }catch(e){}
   }
   if(!k&&S.demo) k=mockKlines(idx,95);
   S.idxK=k||null;
@@ -3391,12 +3433,17 @@ $('pExit').addEventListener('change',()=>{ syncExitUI();
   if(S.klines&&S.klines.length){ runCompare(); refreshSignalPanel(); buildTicker(); resetPlayback(true); } });
 $('pAtrN').addEventListener('change',()=>{ if(S.klines&&S.klines.length){ runCompare(); resetPlayback(true); } });
 $('pDays').addEventListener('change',()=>{ S.results={}; loadAll(); });
+$('srcMode').addEventListener('change',()=>{   // 切换数据源：自动双源/仅东财/仅腾讯 → 重取当前个股
+  const m=$('srcMode').value;
+  log('info', m==='auto'?'数据源：自动双源补齐（东财+腾讯互补）':m==='em'?'数据源：仅东财':'数据源：仅腾讯');
+  S.results={}; loadAll();
+});
 window.addEventListener('resize',()=>{ drawTrends(); drawKline(); });
 
 // 盘中自动刷新分时 + 主力资金（60秒）
 setInterval(async ()=>{
   if(S.source!=='live'||!updateClock()) return;
-  try{ S.trends=await fetchTrends(S.stock);
+  try{ S.trends=(await getTrends(S.stock)).t;
     S.idxTrend=null;                                      // 刷新大盘门槛数据
     refreshHeader(); drawTrends(); refreshSignalPanel(); buildTicker();
     loadFlows();
