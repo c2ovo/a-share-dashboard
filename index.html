@@ -787,6 +787,12 @@ const CORS_PROXIES=[
   u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u),
   u=>'https://thingproxy.freeboard.io/fetch/'+u,
 ];
+// 解析响应：东财被限流时会返回 HTML 拦截页而不是 JSON → 识别出来抛 RATE_LIMIT，让上层据此退避/停手
+async function _json(r){
+  const t=await r.text();
+  if(/^\s*</.test(t)) throw new Error('RATE_LIMIT');   // "<html>..." = 反爬拦截页
+  return JSON.parse(t);
+}
 let _proxyBest=-1;   // 记住第一个成功的代理，后续直接用它，避免每次重试
 async function _viaProxy(url){
   const order = _proxyBest>=0 ? [_proxyBest, ...CORS_PROXIES.map((_,i)=>i).filter(i=>i!==_proxyBest)]
@@ -795,7 +801,7 @@ async function _viaProxy(url){
   for(const i of order){
     try{
       const r=await withTimeout(fetch(CORS_PROXIES[i](url)),9000);
-      if(r&&r.ok){ const t=await r.text(); if(t){ const j=JSON.parse(t); _proxyBest=i; return j; } }
+      if(r&&r.ok){ const t=await r.text(); if(t){ if(/^\s*</.test(t)) throw new Error('RATE_LIMIT'); const j=JSON.parse(t); _proxyBest=i; return j; } }
       lastErr=new Error('proxy http '+(r&&r.status));
     }catch(e){ lastErr=e; }
   }
@@ -809,8 +815,8 @@ async function _tryLocal(url){
   if(_localOK===false) return null;
   try{
     const r=await withTimeout(fetch(LOCAL_PROXY+encodeURIComponent(url)),8000);
-    if(r&&r.ok){ if(_localOK!==true){ _localOK=true; log&&log('ok','已连接本地助手 127.0.0.1:8787，全市场走本机直连'); } return await r.json(); }
-  }catch(e){ if(_localOK===null) _localOK=false; }
+    if(r&&r.ok){ if(_localOK!==true){ _localOK=true; log&&log('ok','已连接本地助手 127.0.0.1:8787，全市场走本机直连'); } return await _json(r); }
+  }catch(e){ if(e&&e.message==='RATE_LIMIT'){ _localOK=true; throw e; } if(_localOK===null) _localOK=false; }
   return null;
 }
 async function apiGet(url){
@@ -818,7 +824,7 @@ async function apiGet(url){
   // 不再浪费时间去试被墙的公共代理——否则每个失败页要拖几十秒，全市场必然掉页
   if(_localOK===true){
     const r=await withTimeout(fetch(LOCAL_PROXY+encodeURIComponent(url)),13000);
-    if(r&&r.ok) return await r.json();
+    if(r&&r.ok) return await _json(r);
     throw new Error('本地助手请求失败');
   }
   // ⓪ 本地助手（若在运行）——最稳，优先
@@ -1028,7 +1034,7 @@ async function fetchTopFlow(){ // 全市场个股主力净流入 Top
 async function fetchAllMarket(onProg){ // 全市场快照（沪深主板/创业/科创/北交所，含ST）
   const fields='f2,f3,f5,f6,f8,f10,f12,f13,f14,f15,f16,f17,f18,f62,f184';
   const pz=100;   // 东财 clist 单页硬上限≈100，请求再大也只返回100条（之前写200→少抓一半）
-  const urlOf=(fs,pn)=>`https://push2.eastmoney.com/api/qt/clist/get?pn=${pn}&pz=${pz}&po=1&np=1&fltt=2&invt=2&fid=f62&fs=${fs}&fields=${fields}`;
+  const urlOf=(fs,pn)=>`https://push2.eastmoney.com/api/qt/clist/get?pn=${pn}&pz=${pz}&po=1&np=1&ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&invt=2&fid=f62&fs=${fs}&fields=${fields}`;
   const parse=arr=>arr.map(x=>{ const mk= x.f13!=null? x.f13 : (/^6/.test(x.f12)?1:0);
     return {code:x.f12, name:x.f14, secid:mk+'.'+x.f12,
       px:+x.f2||0, pct:+x.f3||0, vol:+x.f5||0, amt:+x.f6||0, turn:+x.f8||0, vr:+x.f10||1,
@@ -1042,33 +1048,39 @@ async function fetchAllMarket(onProg){ // 全市场快照（沪深主板/创业/
     const total=d1.total||0;
     const effPz=first.length||pz;                              // 用实际每页返回条数算页数，避免服务端限页导致漏抓
     const pages=Math.min(80,Math.ceil(total/effPz)||1);         // 全市场约5400只，100/页→需~54页，上限放到80
-    let all=first;
+    let all=first, rl=0, aborted=false;                       // rl=命中反爬拦截页次数；aborted=判定已被封控、快速止损
     if(onProg) onProg(all.length,total);
-    async function fetchPage(p){                                // 单页带退避重试；退避给限流留恢复时间
-      for(let att=0; att<4; att++){
+    async function fetchPage(p){                                // 单页带退避重试；遇拦截页退避更久
+      for(let att=0; att<3; att++){
+        if(aborted) return false;
         try{ const j=await apiGet(urlOf(fs,p)); const d=j&&j.data&&j.data.diff;
           const rows=d? parse(Array.isArray(d)?d:Object.values(d)) : null;
           if(rows&&rows.length){ all=all.concat(rows); if(onProg) onProg(all.length,total); return true; }
-        }catch(e){}
-        await sleep(600+att*1400+Math.floor(Math.random()*300));   // 退避+抖动
+        }catch(e){ if(e&&e.message==='RATE_LIMIT'){ rl++; if(rl>=8){ aborted=true; return false; }  // 连续被拦→判定封控，快速止损（不再干等几分钟）
+            await sleep(2500+att*2000); continue; } }
+        await sleep(600+att*1200+Math.floor(Math.random()*300));   // 退避+抖动
       }
       return false;
     }
     // 关键：东财对高频/高并发有反爬限流——猛刷+重试会越刷越被封，导致每次只剩两三千只。
-    // 改成“温柔抓取”：低并发(3) + 每次请求之间留间隔，被限流的概率大幅下降。
+    // 改成“温柔抓取”：低并发(2) + 每次请求之间留间隔，被限流的概率大幅下降。
     const rest=[]; for(let p=2;p<=pages;p++) rest.push(p);
     let failed=[];
-    async function w(){ while(rest.length){ const p=rest.shift(); const ok=await fetchPage(p); if(!ok) failed.push(p);
-      await sleep(90+Math.floor(Math.random()*90)); } }             // 请求间隔，别把接口打到限流
-    await Promise.all(Array.from({length:3},w));                    // 并发降到3
-    // 兜底：仍失败的页，整体停一会儿等限流窗口过去，再串行慢慢补
-    if(failed.length){ const again=failed; failed=[]; await sleep(2000);
-      for(const p of again){ const ok=await fetchPage(p); if(!ok) failed.push(p); await sleep(200); } }
-    return {list:all, total, err:null, missPages:failed.length};
+    async function w(){ while(rest.length && !aborted){ const p=rest.shift(); const ok=await fetchPage(p); if(!ok) failed.push(p);
+      await sleep(120+Math.floor(Math.random()*120)); } }           // 请求间隔，别把接口打到限流
+    await Promise.all(Array.from({length:2},w));                    // 并发降到2
+    // 兜底：仅在“不是被封控”时，才停一会儿再补失败页（被封控时补也是白补，直接返回让上层报限流）
+    if(failed.length && !aborted){ const again=failed; failed=[]; await sleep(3000);
+      for(const p of again){ const ok=await fetchPage(p); if(!ok) failed.push(p); await sleep(300); } }
+    return {list:all, total, err:null, missPages:failed.length, rl, aborted};
   }
   // ① 主市场（已验证可用的过滤）：沪深主板 + 创业板 + 科创板（含ST）
   const main=await grab('m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23');
   if(!main.list.length) throw new Error('全市场行情接口不可达（'+(main.err||'空')+'）。请用【下载的文件本地打开】或【网站】访问——Cowork预览/手机App沙箱禁止联网，无法拉全市场');
+  // 覆盖率崩塌（多为反爬拦截页）→ 明确报"被限流"，别拿100只冒充成功
+  if(main.total && main.list.length < main.total*0.6){
+    throw new Error(`__RL__东财已临时限流你的IP：只取回 ${main.list.length}/${main.total} 只${main.rl?`（接口 ${main.rl} 次返回反爬拦截页）`:''}。这是短时间内全市场请求过多被临时封控。请【停手等 15~30 分钟】再扫，期间千万别反复点重新扫描——每点一次都会重新计时、延长封控。`);
+  }
   // ② 北交所（尽力而为，失败不影响主市场）
   let bj={list:[],total:0}; try{ bj=await grab('m:0+t:81+s:2048'); }catch(e){}
   const map={}; [...main.list,...bj.list].forEach(s=>{ if(s.code&&s.px>0) map[s.code]=s; });
@@ -2742,12 +2754,24 @@ async function scanAll(force){
   try{
     if(mode==='all'){
       // ===================== 全市场扫描 =====================
-      log('info','开始全市场扫描（含ST/科创/创业/北交所）…');
+      // 缓存：3分钟内的全市场数据直接复用，不再请求东财——反复重扫是触发反爬封控的主因
+      const fresh = S.universe&&S.poolSnap&&S.poolA&&S._uniTs&&(Date.now()-S._uniTs<180000);
+      if(fresh){
+        const age=Math.round((Date.now()-S._uniTs)/1000);
+        log('info',`复用 ${age} 秒前的全市场数据（${S.universe.length}只），不再请求东财——避免频繁请求触发反爬限流（满3分钟自动重拉；如需强制刷新可等一会儿再扫）`);
+        setP('复用缓存数据，重算信号…',80);
+        patchPoolToday(S.poolSnap); await ensureIdxK();
+        calcRuleStats(); renderIndCards(); evaluateSignals(); renderCCPool();
+        setP(`(缓存)全市场：快照${S.universe.length} / 深度${Object.keys(S.poolA).length} · B${S.scan.b.length}/S${S.scan.s.length}`,100);
+        log('ok',`全市场（缓存）：快照 ${S.universe.length} 只 · B点 ${S.scan.b.length} / S点 ${S.scan.s.length}`);
+        S._lastMode=mode; S.scanning=false; btn.disabled=false; btn.textContent='↻ 重新扫描'; return;
+      }
+      log('info','开始全市场扫描（含ST/科创/创业/北交所）…温柔抓取，约30-60秒，请勿反复点击');
       setP('拉取全市场快照…',3);
       const {list,total,miss}=await fetchAllMarket((n,t)=>setP(`拉取全市场快照 ${n}/${t||'…'} 只…`, 3+Math.min(32,n/(t||5400)*32)));
       if(!list.length) throw new Error('全市场快照为空');
-      S.universe=list; const snaps={}; list.forEach(s=>snaps[s.code]=s); S.poolSnap=snaps;
-      if(miss) log('warn',`网络波动导致 ${miss} 页(每页~100只)重试后仍未取到，本次覆盖 ${list.length} 只（应约${total}）。再点一次「重新扫描」通常即可补齐。`);
+      S.universe=list; S._uniTs=Date.now(); const snaps={}; list.forEach(s=>snaps[s.code]=s); S.poolSnap=snaps;
+      if(miss) log('warn',`网络波动导致 ${miss} 页(每页~100只)重试后仍未取到，本次覆盖 ${list.length} 只（应约${total}）。稍等片刻再点一次通常即可补齐。`);
       log('ok',`全市场快照：${list.length} 只（含ST/科创/创业/北交所）`);
       // 深度候选：主力净流入>0 且 涨幅[-4,9.8) 的前 N 名（按主力占比+量比）
       const N=+($('scanDepth')?$('scanDepth').value:300)||300;
@@ -2797,8 +2821,10 @@ async function scanAll(force){
     }
     S._lastMode=mode;
   }catch(e){
-    setP('扫描失败：'+e.message,0);
-    log('err','信号扫描失败：'+e.message);
+    const msg=(e.message||'').replace('__RL__','');
+    const isRL=(e.message||'').startsWith('__RL__');
+    setP(isRL?'⚠ 被东财限流，请等15~30分钟再扫':'扫描失败：'+msg,0);
+    log(isRL?'warn':'err',(isRL?'⚠ ':'信号扫描失败：')+msg);
   }
   S.scanning=false; btn.disabled=false; btn.textContent='↻ 重新扫描';
 }
